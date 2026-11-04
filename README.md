@@ -1,7 +1,7 @@
 # AlphaRupee Collections CRM
 
 Collections CRM integrating Sensei LMS/LOS, Smartflo, MSG91 and CRIF.
-`app/` currently holds the clickable prototype (v3). The real application replaces it later; the pipeline stays the same.
+`app/` holds the clickable prototype (v3). `backend/` (Django) and `frontend/` (React) are the real application, Phase 1 increment 1: see `docs/PHASE1.md`. Once `frontend/package.json` exists, the pipeline serves the React build instead of `app/`.
 
 ## How code reaches AWS
 
@@ -47,7 +47,7 @@ Each deploy is a numbered folder under `DEPLOY_PATH/releases/`; `current` is a s
 | `SSH_PRIVATE_KEY` | secret | private key for the deploy user |
 | `SSH_KNOWN_HOSTS` | secret | output of `ssh-keyscan` for the server, checked by you |
 
-Setup guides: `docs/GITHUB_SETUP.md` (GitHub), `docs/AWS_UAT_SETUP.md` (AWS UAT server and database; `infra/aws/` holds the scripts).
+Setup guides: `docs/GITHUB_SETUP.md` (GitHub), `docs/AWS_UAT_SETUP.md` (AWS UAT with scripts, in `infra/aws/`), `docs/AWS_UAT_MANUAL.md` (same thing by hand in the Console).
 
 ## Rules
 
