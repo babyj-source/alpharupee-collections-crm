@@ -1,0 +1,78 @@
+# Reusable deploy job. Called by deploy-uat.yml and deploy-production.yml.
+# The GitHub Environment (uat or production) supplies the host, user and SSH key.
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      HEALTH_URL: ${{ vars.HEALTH_URL }}
+      RESTART_CMD: ${{ vars.RESTART_CMD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the environment is configured
+        run: |
+          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH; do
+            if [ -z "${!v}" ]; then echo "::error::Variable $v is not set on the ${{ inputs.environment }} environment"; exit 1; fi
+          done
+
+      # Build step: today the release is the contents of app/ (the prototype).
+      # When the real application exists, build it here and package the output instead.
+      - name: Package release
+        run: |
+          RELEASE_ID="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          echo "RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
+          tar -czf release.tgz -C app .
+          ls -l release.tgz
+
+      - name: Prepare SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload and deploy
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20"
+          REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
+          TMP="/tmp/crm-deploy-$RELEASE_ID"
+          ssh $SSH_OPTS "$REMOTE" "mkdir -p $TMP"
+          scp $SSH_OPTS release.tgz deploy/deploy.sh "$REMOTE:$TMP/"
+          ssh $SSH_OPTS "$REMOTE" \
+            "HEALTH_URL='$HEALTH_URL' RESTART_CMD='$RESTART_CMD' bash $TMP/deploy.sh --id '$RELEASE_ID' --archive $TMP/release.tgz --base '$DEPLOY_PATH'; rc=\$?; rm -rf $TMP; exit \$rc"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy to ${{ inputs.environment }}"
+            echo "- Release: \`$RELEASE_ID\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Ref: \`$GITHUB_REF_NAME\`"
+            echo "- Result: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH key from the runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

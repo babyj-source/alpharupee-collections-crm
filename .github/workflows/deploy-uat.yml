@@ -1,0 +1,21 @@
+name: Deploy to UAT
+
+# Every merge to main goes to UAT.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-uat
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: uat
+    secrets: inherit

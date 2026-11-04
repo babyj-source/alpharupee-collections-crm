@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+*.pem
+*.key
+*_deploy_key
+*_deploy_key.pub
+release.tgz
+.DS_Store
