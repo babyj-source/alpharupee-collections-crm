@@ -1,6 +1,6 @@
 # Every change needs review from the code owners below.
-# Replace the placeholder with your GitHub organization and team, for example @copperhive/crm-maintainers.
-*                    @ORG/crm-maintainers
-/.github/            @ORG/crm-admins
-/deploy/             @ORG/crm-admins
-/scripts/            @ORG/crm-admins
+# Personal account for now. When the repo moves to an organization, replace with teams, e.g. @copperhive/crm-maintainers.
+*                    @babyj-source
+/.github/            @babyj-source
+/deploy/             @babyj-source
+/scripts/            @babyj-source

@@ -32,13 +32,35 @@ jobs:
             if [ -z "${!v}" ]; then echo "::error::Variable $v is not set on the ${{ inputs.environment }} environment"; exit 1; fi
           done
 
-      # Build step: today the release is the contents of app/ (the prototype).
-      # When the real application exists, build it here and package the output instead.
+      # Release layout on the server:
+      #   web/          static site (today: the prototype in app/; later: the built React app)
+      #   backend/      Django project (added automatically once backend/ exists in the repo)
+      #   server-tools/ helper scripts (setup-env.sh, enable-https.sh)
+      #   post-deploy.sh
+      - name: Build React front end
+        if: hashFiles('frontend/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Package release
         run: |
           RELEASE_ID="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
           echo "RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
-          tar -czf release.tgz -C app .
+          rm -rf stage && mkdir -p stage/web stage/server-tools
+          if [ -f frontend/package.json ]; then
+            (cd frontend && npm ci && npm run build)
+            cp -r frontend/dist/. stage/web/
+          else
+            cp -r app/. stage/web/
+          fi
+          if [ -f backend/manage.py ]; then
+            cp -r backend stage/backend
+            find stage/backend -name '__pycache__' -prune -exec rm -rf {} +
+          fi
+          cp deploy/server/*.sh deploy/rollback.sh stage/server-tools/
+          cp deploy/post-deploy.sh stage/post-deploy.sh
+          chmod +x stage/post-deploy.sh stage/server-tools/*.sh
+          tar -czf release.tgz -C stage .
           ls -l release.tgz
 
       - name: Prepare SSH

@@ -22,7 +22,7 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          for f in deploy/*.sh scripts/*.sh; do
+          for f in deploy/*.sh deploy/server/*.sh scripts/*.sh infra/aws/*.sh; do
             echo "checking $f"
             bash -n "$f"
           done

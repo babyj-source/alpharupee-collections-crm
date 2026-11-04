@@ -32,15 +32,23 @@ git checkout -B main >/dev/null 2>&1
 git add -A
 git diff --cached --quiet || git commit -m "Initial commit: CRM prototype, CI and deploy pipeline"
 git remote get-url origin >/dev/null 2>&1 || git remote add origin "https://github.com/$FULL.git"
+gh auth setup-git >/dev/null 2>&1 || true
+# If the repo was created with a README/licence, bring that history in first so the push is accepted.
+if git ls-remote --exit-code --heads origin main >/dev/null 2>&1; then
+  git pull --no-rebase --allow-unrelated-histories -X ours --no-edit origin main || true
+fi
 git push -u origin main
+
+warn() { echo "    !! $1 failed. Likely needs a paid GitHub plan or an org. Set it by hand: $2"; }
 
 echo "==> 3. Repository settings"
 gh api -X PATCH "repos/$FULL" \
   -F allow_squash_merge=true -F allow_merge_commit=false -F allow_rebase_merge=false \
-  -F delete_branch_on_merge=true -F has_wiki=false >/dev/null
+  -F delete_branch_on_merge=true -F has_wiki=false >/dev/null \
+  || warn "Repository settings" "Settings > General"
 
 echo "==> 4. Protect main (pull request + passing CI + no force push)"
-gh api -X PUT "repos/$FULL/branches/main/protection" --input - >/dev/null <<JSON
+gh api -X PUT "repos/$FULL/branches/main/protection" --input - >/dev/null <<JSON || warn "Branch protection" "Settings > Branches > Add rule for main"
 {
   "required_status_checks": { "strict": true, "contexts": ["build-and-test"] },
   "enforce_admins": false,
@@ -58,27 +66,29 @@ gh api -X PUT "repos/$FULL/branches/main/protection" --input - >/dev/null <<JSON
 JSON
 
 echo "==> 5. Environments"
-gh api -X PUT "repos/$FULL/environments/uat" >/dev/null
-echo "    uat: created (no approval, deploys on every merge to main)"
+gh api -X PUT "repos/$FULL/environments/uat" >/dev/null \
+  && echo "    uat: created (no approval, deploys on every merge to main)" \
+  || warn "Environment uat" "Settings > Environments > New environment"
 
-if [ ${#REVIEWERS[@]} -gt 0 ]; then
-  REV_JSON=""
-  for u in "${REVIEWERS[@]}"; do
-    id="$(gh api "users/$u" --jq .id)"
-    REV_JSON="$REV_JSON{\"type\":\"User\",\"id\":$id},"
-  done
-  REV_JSON="[${REV_JSON%,}]"
-  gh api -X PUT "repos/$FULL/environments/production" --input - >/dev/null <<JSON
-{ "reviewers": $REV_JSON, "prevent_self_review": false, "deployment_branch_policy": null }
+REV_JSON=""
+for u in "${REVIEWERS[@]}"; do
+  id="$(gh api "users/$u" --jq .id)"
+  REV_JSON="$REV_JSON{\"type\":\"User\",\"id\":$id},"
+done
+if [ -n "$REV_JSON" ]; then
+  gh api -X PUT "repos/$FULL/environments/production" --input - >/dev/null <<JSON \
+    && echo "    production: created with required reviewers: ${REVIEWERS[*]}" \
+    || warn "Environment production with reviewers" "Settings > Environments > production > Required reviewers"
+{ "reviewers": [${REV_JSON%,}], "prevent_self_review": false, "deployment_branch_policy": null }
 JSON
-  echo "    production: created with required reviewers: ${REVIEWERS[*]}"
 else
-  gh api -X PUT "repos/$FULL/environments/production" >/dev/null
-  echo "    production: created WITHOUT reviewers. Add them: Settings > Environments > production > Required reviewers"
+  gh api -X PUT "repos/$FULL/environments/production" >/dev/null \
+    && echo "    production: created WITHOUT reviewers; add them in Settings > Environments > production" \
+    || warn "Environment production" "Settings > Environments > New environment"
 fi
 
-echo "==> 6. Tag protection for release tags (v*.*.*)"
-gh api -X POST "repos/$FULL/rulesets" --input - >/dev/null 2>&1 <<JSON || echo "    could not create the tag ruleset (needs admin; set it in Settings > Rules > Rulesets)"
+echo "==> 6. Tag protection for release tags (v*)"
+gh api -X POST "repos/$FULL/rulesets" --input - >/dev/null <<JSON || warn "Tag ruleset" "Settings > Rules > Rulesets > New tag ruleset (pattern v*, block deletion and updates)"
 {
   "name": "Release tags are protected",
   "target": "tag",
@@ -90,12 +100,12 @@ JSON
 
 cat <<MSG
 
-Done. Repository: https://github.com/$FULL
+Finished. Repository: https://github.com/$FULL
+Any line above starting with "!!" needs doing by hand in GitHub.
 
 Still to do by hand (these hold secrets, so the script does not touch them):
   For each environment (uat, production):  Settings > Environments > <name>
     Variables:  DEPLOY_HOST  DEPLOY_USER  DEPLOY_PATH  HEALTH_URL  RESTART_CMD
     Secrets:    SSH_PRIVATE_KEY  SSH_KNOWN_HOSTS
   Also: Settings > Actions > General > Workflow permissions = "Read repository contents"
-  Also: edit .github/CODEOWNERS and replace @ORG/... with your real teams.
 MSG

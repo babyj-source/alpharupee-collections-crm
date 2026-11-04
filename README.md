@@ -47,7 +47,7 @@ Each deploy is a numbered folder under `DEPLOY_PATH/releases/`; `current` is a s
 | `SSH_PRIVATE_KEY` | secret | private key for the deploy user |
 | `SSH_KNOWN_HOSTS` | secret | output of `ssh-keyscan` for the server, checked by you |
 
-Full setup steps: `docs/GITHUB_SETUP.md`.
+Setup guides: `docs/GITHUB_SETUP.md` (GitHub), `docs/AWS_UAT_SETUP.md` (AWS UAT server and database; `infra/aws/` holds the scripts).
 
 ## Rules
 

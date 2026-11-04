@@ -1,0 +1,1 @@
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart crm, /usr/bin/systemctl reload nginx
