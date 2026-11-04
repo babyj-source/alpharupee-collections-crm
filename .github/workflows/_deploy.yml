@@ -24,7 +24,7 @@ jobs:
       HEALTH_URL: ${{ vars.HEALTH_URL }}
       RESTART_CMD: ${{ vars.RESTART_CMD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the environment is configured
         run: |
