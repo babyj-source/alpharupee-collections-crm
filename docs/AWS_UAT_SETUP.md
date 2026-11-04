@@ -96,7 +96,7 @@ Variables (from `show-env.sh`):
 | `DEPLOY_HOST` | server IP |
 | `DEPLOY_USER` | `deploy` |
 | `DEPLOY_PATH` | `/opt/crm` |
-| `HEALTH_URL` | `http://127.0.0.1/healthz` |
+| `HEALTH_URL` | `http://127.0.0.1/healthz` until step 8, then `https://<your domain>/healthz` (or `/api/health` once the backend is deployed) |
 | `RESTART_CMD` | `sudo systemctl restart crm` |
 
 Secrets:
@@ -130,6 +130,8 @@ sudo bash /opt/crm/current/server-tools/enable-https.sh uat-crm.alpharupee.in ba
 ```
 
 Then open `https://uat-crm.alpharupee.in/`. OTP login must only be used over HTTPS.
+
+HTTPS turns port 80 into a redirect that answers 404 to `127.0.0.1`, so now change the GitHub `uat` variable `HEALTH_URL` to `https://uat-crm.alpharupee.in/healthz`, or the next deploy fails its health check and rolls back.
 
 ## 9. Create the application settings file (secrets, typed on the server)
 

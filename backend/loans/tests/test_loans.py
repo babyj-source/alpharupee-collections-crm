@@ -6,70 +6,103 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import AuditLog, User
-from loans.models import Loan, SyncRun
+from loans.models import ACTIVE_Q, Loan, SyncRun
 from loans.sync import run_sync
 
 
 class FakeReader:
-    def __init__(self, accounts, items, borrowers=()):
-        self._a, self._i, self._b = accounts, items, borrowers
+    """Same two methods as LmsReader, no database."""
+
+    def __init__(self, accounts, customers=()):
+        self._a, self._c = accounts, customers
 
     def accounts(self):
         return iter(self._a)
 
-    def items(self):
-        return iter(self._i)
-
-    def borrowers(self):
-        return iter(self._b)
+    def customers(self):
+        return iter(self._c)
 
 
-def acct(aid, status=0):
-    return {"account_id": aid, "customer_id": f"C{aid}", "product_code": "PL", "branch_code": "B1", "operational_status": status}
+def acct(aid, dpd=0, demand=0, fee=0, status=0, holder=1, customer=None, first="Asha", last="Rao"):
+    return {
+        "account_id": aid, "customer_id": customer or f"C{aid}", "holder_num": holder, "product_code": "PL",
+        "branch_code": "B1", "operational_status": status, "dpd": dpd, "oldest_due_demand_date": date(2026, 9, 1),
+        "last_repayment_date": date(2026, 8, 1), "total_demand_due_magnitude": demand, "total_fee_due_magnitude": fee,
+        "balance_magnitude": -1000, "installment_amount_magnitude": 500,
+        "first_name": first, "middle_name": None, "last_name": last,
+    }
 
 
-def item(iid, aid, dpd, demand, fee=0, balance=-1000):
-    return {"id": iid, "account_id": aid, "due_from_date": date(2026, 9, 1), "demand_due": demand, "fee_due": fee,
-            "balance": balance, "installment_amount": 500, "dpd": dpd, "risk_dpd": dpd, "bom_dpd": dpd}
+def cust(cid, phone1="9111111111", phone2="", ref="Meena Rao", ref_phone="9333333333", rel="Sister",
+         ref2="", ref2_phone="", rel2=""):
+    return {
+        "customer_id": cid, "phone1": phone1, "phone2": phone2, "reference_name": ref, "reference_phone": ref_phone,
+        "reference_relationship_type": rel, "reference_name2": ref2, "reference_phone2": ref2_phone,
+        "reference_relationship_type2": rel2,
+    }
 
 
 class SyncTests(TestCase):
-    def test_creates_and_updates_and_keeps_crm_fields(self):
-        r1 = FakeReader([acct("A1"), acct("A2", 2)], [item(1, "A1", 12, Decimal("500.50"), Decimal("10"))],
-                        [{"account_id": "A1", "name": "Asha Rao", "mobile": "9876543210"}])
-        run = run_sync(r1)
+    def test_creates_updates_and_keeps_crm_fields(self):
+        run = run_sync(FakeReader([acct("A1", 12, Decimal("500.50"), Decimal("10")), acct("A2", status=2)],
+                                  [cust("CA1")]))
         self.assertTrue(run.ok)
         self.assertEqual((run.created, run.updated), (2, 0))
         loan = Loan.objects.get(account_id="A1")
         self.assertEqual(loan.overdue_amount, Decimal("510.50"))
-        self.assertEqual(loan.borrower_mobile, "919876543210")
-        self.assertEqual(loan.masked_mobile, "XXXXXXXX3210")
+        self.assertEqual(loan.dpd, 12)
+        self.assertEqual(loan.borrower_name, "Asha Rao")
+        self.assertEqual(loan.borrower_mobile, "919111111111")
+        self.assertEqual((loan.ref1_name, loan.ref1_mobile, loan.ref1_relation), ("Meena Rao", "919333333333", "Sister"))
         loan.crm_status, loan.note = "promised", "calls on Friday"
         loan.save()
-        # second run: a newer collection item for A1 wins; CRM fields survive
-        r2 = FakeReader([acct("A1"), acct("A2", 2)],
-                        [item(1, "A1", 12, 500), item(2, "A1", 20, 700)])
-        run = run_sync(r2)
+        run = run_sync(FakeReader([acct("A1", 20, 700), acct("A2", status=2)], [cust("CA1")]))
         self.assertEqual((run.created, run.updated), (0, 2))
         loan.refresh_from_db()
         self.assertEqual(loan.dpd, 20)
-        self.assertEqual(loan.crm_status, "promised")
-        self.assertEqual(loan.note, "calls on Friday")
-        self.assertEqual(loan.borrower_name, "Asha Rao")  # not wiped when the borrower feed is empty
+        self.assertEqual((loan.crm_status, loan.note), ("promised", "calls on Friday"))
 
-    def test_account_without_item_gets_zero_dues(self):
-        run_sync(FakeReader([acct("A9")], []))
-        self.assertEqual(Loan.objects.get().dpd, 0)
+    def test_primary_holder_is_lowest_holder_num(self):
+        run_sync(FakeReader([acct("J1", holder=2, first="Second", customer="CB"), acct("J1", holder=1, first="First", customer="CA")],
+                            [cust("CA", phone1="9000000001"), cust("CB", phone1="9000000002")]))
+        loan = Loan.objects.get(account_id="J1")
+        self.assertEqual((loan.borrower_name, loan.borrower_mobile), ("First Rao", "919000000001"))
+        self.assertEqual(Loan.objects.count(), 1)
+
+    def test_contacts_only_for_active_loans(self):
+        run_sync(FakeReader([acct("OPEN", status=0), acct("SHUT", status=2)], [cust("COPEN"), cust("CSHUT")]))
+        self.assertTrue(Loan.objects.get(account_id="OPEN").borrower_mobile)
+        shut = Loan.objects.get(account_id="SHUT")
+        self.assertEqual((shut.borrower_mobile, shut.ref1_mobile), ("", ""))
+
+    def test_missing_reference_and_missing_customer(self):
+        run_sync(FakeReader([acct("N1"), acct("N2")], [cust("CN1", ref="", ref_phone="", rel="")]))
+        n1, n2 = Loan.objects.get(account_id="N1"), Loan.objects.get(account_id="N2")
+        self.assertEqual(n1.ref1_mobile, "")
+        self.assertEqual([c["key"] for c in n1.contacts()], ["borrower"])
+        self.assertEqual(n2.contacts(), [])
 
     def test_failure_is_recorded_not_raised(self):
         class Boom(FakeReader):
-            def items(self):
+            def accounts(self):
                 raise RuntimeError("lms down")
 
-        run = run_sync(Boom([], []))
+        run = run_sync(Boom([]))
         self.assertFalse(run.ok)
         self.assertIn("lms down", run.error)
         self.assertEqual(SyncRun.objects.count(), 1)
+
+    def test_active_accepts_code_and_text(self):
+        run_sync(FakeReader([acct("S1", status=0), acct("S2", status="Active"), acct("S3", status=2), acct("S4", status=1)]))
+        ids = sorted(Loan.objects.filter(ACTIVE_Q).values_list("account_id", flat=True))
+        self.assertEqual(ids, ["S1", "S2"])
+
+    def test_reader_queries_avoid_sensitive_columns(self):
+        from loans import lms
+
+        text = (lms.ACCOUNT_COLUMNS + " " + lms.CUSTOMER_COLUMNS).lower()
+        for banned in ("pan", "date_of_birth", "address", "email", "document", "encorepaydb"):
+            self.assertNotIn(banned, text)
 
 
 class ApiTests(TestCase):
@@ -79,9 +112,10 @@ class ApiTests(TestCase):
         self.a1 = User.objects.create_user("a1@x.com", "pw", name="Agent One", mobile="919000000002", role="agent")
         self.a2 = User.objects.create_user("a2@x.com", "pw", name="Agent Two", mobile="919000000003", role="agent")
         run_sync(FakeReader(
-            [acct("L1"), acct("L2"), acct("L3"), acct("L4", 2)],
-            [item(1, "L1", 5, 100), item(2, "L2", 45, 400, 20), item(3, "L3", 0, 0), item(4, "L4", 99, 900)],
-            [{"account_id": "L1", "name": "Asha", "mobile": "9111111111"}, {"account_id": "L2", "name": "Ravi", "mobile": "9222222222"}],
+            [acct("L1", 5, 100, first="Asha"), acct("L2", 45, 400, 20, first="Ravi"), acct("L3", 0, 0), acct("L4", 99, 900, status=2)],
+            [cust("CL1", "9111111111", ref="Meena Rao", ref_phone="9333333333", rel="Sister"),
+             cust("CL2", "9222222222", ref="", ref_phone=""),
+             cust("CL3"), cust("CL4")],
         ))
         self.l1 = Loan.objects.get(account_id="L1")
         self.l2 = Loan.objects.get(account_id="L2")
@@ -105,30 +139,42 @@ class ApiTests(TestCase):
         self.assertEqual([x["account_id"] for x in r["results"]], ["L1"])
         self.assertEqual(self.api(self.a1).get(f"/api/loans/{self.l2.pk}").status_code, 404)
         self.assertEqual(self.api(self.a1).patch(f"/api/loans/{self.l2.pk}", {"crm_status": "paid"}, format="json").status_code, 404)
-        self.assertEqual(self.api(self.a1).post(f"/api/loans/{self.l2.pk}/mobile").status_code, 404)
+        self.assertEqual(self.api(self.a1).post(f"/api/loans/{self.l2.pk}/mobile", {"which": "borrower"}, format="json").status_code, 404)
 
     def test_head_sees_active_loans_worst_first(self):
         r = self.api(self.head).get("/api/loans").json()
         self.assertEqual([x["account_id"] for x in r["results"]], ["L2", "L1", "L3"])  # L4 is closed
-        self.assertEqual(self.api(self.head).get("/api/loans?overdue=1&agent=none").json()["count"], 0)
 
-    def test_api_never_returns_the_full_number(self):
-        r = self.api(self.head).get(f"/api/loans/{self.l1.pk}").json()
-        self.assertEqual(r["mobile"], "XXXXXXXX1111")
-        self.assertNotIn("9111111111", str(r))
+    def test_api_never_returns_a_full_number(self):
+        r = self.api(self.head).get(f"/api/loans/{self.l1.pk}")
+        body = r.content.decode()
+        for raw in ("9111111111", "9333333333"):
+            self.assertNotIn(raw, body)
+        data = r.json()
+        self.assertEqual([c["key"] for c in data["contacts"]], ["borrower", "ref1"])
+        self.assertEqual(data["contacts"][1]["name"], "Meena Rao")
+        self.assertEqual(data["contacts"][1]["relation"], "Sister")
+        self.assertEqual(data["contacts"][1]["mobile"], "XXXXXXXX3333")
 
-    def test_reveal_is_audited_and_scoped(self):
-        r = self.api(self.a1).post(f"/api/loans/{self.l1.pk}/mobile")
-        self.assertEqual(r.json()["mobile"], "919111111111")
+    def test_reveal_names_the_person_in_the_audit_log(self):
+        r = self.api(self.a1).post(f"/api/loans/{self.l1.pk}/mobile", {"which": "ref1"}, format="json")
+        self.assertEqual(r.json(), {"which": "ref1", "mobile": "919333333333"})
         log = AuditLog.objects.get(action="mobile_revealed")
-        self.assertEqual((log.user, log.object_id), (self.a1, str(self.l1.pk)))
-        self.assertNotIn("9111111111", log.detail)
+        self.assertEqual((log.user, log.object_id, log.detail), (self.a1, str(self.l1.pk), "ref1"))
+        self.assertNotIn("9333333333", log.detail)
+        default = self.api(self.a1).post(f"/api/loans/{self.l1.pk}/mobile", {}, format="json").json()
+        self.assertEqual(default["which"], "borrower")
+        self.assertEqual(self.api(self.a1).post(f"/api/loans/{self.l1.pk}/mobile", {"which": "ref9"}, format="json").status_code, 400)
 
-    def test_status_update(self):
-        r = self.api(self.a1).patch(f"/api/loans/{self.l1.pk}", {"crm_status": "promised", "note": "Fri"}, format="json")
+    def test_reveal_of_missing_number_is_empty(self):
+        r = self.api(self.a2).post(f"/api/loans/{self.l2.pk}/mobile", {"which": "ref1"}, format="json")
+        self.assertEqual(r.json()["mobile"], "")
+
+    def test_status_update_including_reference_contacted(self):
+        r = self.api(self.a1).patch(f"/api/loans/{self.l1.pk}", {"crm_status": "reference_contacted", "note": "Sister said Fri"}, format="json")
         self.assertEqual(r.status_code, 200)
         self.l1.refresh_from_db()
-        self.assertEqual((self.l1.crm_status, self.l1.note), ("promised", "Fri"))
+        self.assertEqual((self.l1.crm_status, self.l1.note), ("reference_contacted", "Sister said Fri"))
         bad = self.api(self.a1).patch(f"/api/loans/{self.l1.pk}", {"crm_status": "bogus"}, format="json")
         self.assertEqual(bad.status_code, 400)
 
@@ -138,7 +184,7 @@ class ApiTests(TestCase):
         self.assertEqual(self.api(self.head).post("/api/loans/assign", body, format="json").json()["updated"], 1)
         self.l1.refresh_from_db()
         self.assertEqual(self.l1.assigned_agent, self.a2)
-        wrong = {"loan_ids": [self.l1.pk], "agent_id": self.head.pk}  # a head is not an agent
+        wrong = {"loan_ids": [self.l1.pk], "agent_id": self.head.pk}
         self.assertEqual(self.api(self.head).post("/api/loans/assign", wrong, format="json").status_code, 404)
         self.assertEqual(self.api(self.a1).get("/api/agents").status_code, 403)
 

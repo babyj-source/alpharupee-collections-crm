@@ -8,9 +8,9 @@ from rest_framework.views import APIView
 from accounts.models import Role, User, audit
 from accounts.permissions import IsHead
 
-from .models import Loan, SyncRun
+from .models import ACTIVE_Q, Loan, SyncRun
 from .pagination import Page
-from .serializers import AssignSerializer, LoanSerializer, LoanUpdateSerializer
+from .serializers import AssignSerializer, LoanSerializer, LoanUpdateSerializer, RevealSerializer
 
 OVERDUE = ExpressionWrapper(F("demand_due") + F("fee_due"), output_field=DecimalField(max_digits=16, decimal_places=2))
 
@@ -29,7 +29,7 @@ class LoanListView(APIView):
         p = request.query_params
         status_filter = p.get("active", "1")
         if status_filter == "1":
-            qs = qs.filter(operational_status=0)
+            qs = qs.filter(ACTIVE_Q)
         if p.get("overdue", "0") == "1":
             qs = qs.filter(dpd__gt=0)
         if p.get("dpd_min"):
@@ -70,15 +70,18 @@ class LoanDetailView(APIView):
 
 
 class RevealMobileView(APIView):
-    """Full number only on request, only for loans the user may see, and every request is logged."""
+    """Full number only on request, only for loans the user may see, and every request is logged with whose number."""
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "reveal"
 
     def post(self, request, pk):
         loan = get_object_or_404(scoped(request.user), pk=pk)
-        audit(request, "mobile_revealed", user=request.user, object_type="loan", object_id=loan.pk)
-        return Response({"mobile": loan.borrower_mobile})
+        ser = RevealSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        which = ser.validated_data["which"]
+        audit(request, "mobile_revealed", user=request.user, object_type="loan", object_id=loan.pk, detail=which)
+        return Response({"which": which, "mobile": loan.number_for(which) or ""})
 
 
 class AssignView(APIView):
@@ -105,7 +108,7 @@ class AgentListView(APIView):
 
 class DashboardView(APIView):
     def get(self, request):
-        qs = scoped(request.user).filter(operational_status=0)
+        qs = scoped(request.user).filter(ACTIVE_Q)
         total = qs.aggregate(accounts=Count("id"), outstanding=Sum("balance"))
         over = qs.filter(dpd__gt=0)
         over_tot = over.aggregate(accounts=Count("id"), amount=Sum(OVERDUE))

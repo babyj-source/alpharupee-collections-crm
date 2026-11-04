@@ -1,13 +1,19 @@
-"""Read-only access to the LMS MySQL. Explicit column lists only: customer identity tables are never selected."""
+"""Read-only access to the LMS MySQL (encorebootdb only). Explicit column lists: PAN, date of birth,
+addresses and e-mail are never selected."""
 import ssl
 from contextlib import contextmanager
 
 import pymysql
 from django.conf import settings
 
-ACCOUNT_COLUMNS = "account_id, customer_id, product_code, branch_code, operational_status"
-ITEM_COLUMNS = (
-    "id, account_id, due_from_date, demand_due, fee_due, balance, installment_amount, dpd, risk_dpd, bom_dpd"
+ACCOUNT_COLUMNS = (
+    "account_id, customer_id, holder_num, product_code, branch_code, operational_status, dpd, "
+    "oldest_due_demand_date, last_repayment_date, total_demand_due_magnitude, total_fee_due_magnitude, "
+    "balance_magnitude, installment_amount_magnitude, first_name, middle_name, last_name"
+)
+CUSTOMER_COLUMNS = (
+    "customer_id, phone1, phone2, reference_name, reference_phone, reference_relationship_type, "
+    "reference_name2, reference_phone2, reference_relationship_type2"
 )
 
 
@@ -39,7 +45,7 @@ def connect():
         database=cfg["database"],
         ssl=_ssl_context(),
         connect_timeout=10,
-        read_timeout=60,
+        read_timeout=120,
         charset="utf8mb4",
         cursorclass=pymysql.cursors.SSCursor,
         autocommit=True,
@@ -54,32 +60,26 @@ def connect():
 
 
 class LmsReader:
-    """The three reads the sync needs. Tests replace this class with a fake that has the same methods."""
+    """The two reads the sync needs. Tests replace this class with a fake that has the same methods."""
 
     def __init__(self):
-        self.schema = settings.LMS_COLLECTIONS_SCHEMA
+        self.schema = settings.LMS_SCHEMA
+        self.tenant = settings.LMS_TENANT_CODE
         if not self.schema.replace("_", "").isalnum():
-            raise ValueError("bad LMS_COLLECTIONS_SCHEMA")
+            raise ValueError("bad LMS_SCHEMA")
 
-    def _rows(self, sql):
+    def _rows(self, sql, params=()):
         with connect() as conn, conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, params)
             cols = [c[0] for c in cur.description]
             for row in cur:
                 yield dict(zip(cols, row))
 
     def accounts(self):
-        return self._rows(f"SELECT {ACCOUNT_COLUMNS} FROM `{self.schema}`.accounts")
+        """One row per account and holder; the sync keeps the lowest holder_num."""
+        sql = f"SELECT {ACCOUNT_COLUMNS} FROM `{self.schema}`.loan_od_account_view WHERE tenant_code = %s"
+        return self._rows(sql, (self.tenant,))
 
-    def items(self):
-        return self._rows(f"SELECT {ITEM_COLUMNS} FROM `{self.schema}`.collection_items ORDER BY id")
-
-    def borrowers(self):
-        sql = (settings.LMS_BORROWER_SQL or "").strip().rstrip(";")
-        if not sql:
-            return
-        if not sql.lower().startswith("select") or ";" in sql:
-            raise ValueError("LMS_BORROWER_SQL must be one SELECT statement")
-        for row in self._rows(sql):
-            vals = list(row.values())
-            yield {"account_id": str(vals[0]), "name": vals[1], "mobile": vals[2]}
+    def customers(self):
+        sql = f"SELECT {CUSTOMER_COLUMNS} FROM `{self.schema}`.customers WHERE tenant_code = %s"
+        return self._rows(sql, (self.tenant,))
