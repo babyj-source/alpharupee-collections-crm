@@ -129,6 +129,8 @@ class Msg91Tests(TestCase):
         kwargs = post.call_args.kwargs
         self.assertEqual(kwargs["headers"]["authkey"], "k")  # key travels in a header, not in the URL
         self.assertNotIn("authkey", kwargs["params"])
+        self.assertEqual(kwargs["json"], {"number": "123456"})  # template OTP-1 uses ##number##
+        self.assertEqual(kwargs["params"]["otp"], "123456")
         bad = mock.Mock(status_code=200, json=lambda: {"type": "error"})
         with mock.patch("accounts.otp.requests.post", return_value=bad):
             with self.assertRaises(otp.OtpDeliveryError):
