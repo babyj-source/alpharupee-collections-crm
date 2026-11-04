@@ -9,3 +9,4 @@ build/
 *_deploy_key.pub
 release.tgz
 .DS_Store
+crm-*-user-data.sh
