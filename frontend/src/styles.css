@@ -32,3 +32,6 @@ th { font-size: .8rem; color: var(--muted); font-weight: 500; } .r { text-align:
 .filters { display: flex; flex-wrap: wrap; gap: 8px; } .filters input { flex: 1; min-width: 180px; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100%); border-radius: 0; overflow-y: auto; display: grid; gap: 12px; align-content: start; box-shadow: -6px 0 24px rgba(0,0,0,.18); }
 dl { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; margin: 0; } dt { color: var(--muted); } dd { margin: 0; }
+h3 { font-size: .95rem; margin: 4px 0 8px; }
+.contacts { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.contacts li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }

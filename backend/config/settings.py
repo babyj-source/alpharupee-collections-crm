@@ -134,11 +134,8 @@ LMS_DB = {
     "ssl_ca": env("LMS_DB_SSL_CA", ""),  # optional CA file; without it the link is encrypted but not verified
 }
 LMS_TENANT_CODE = env("LMS_TENANT_CODE", "NBFC1")
-LMS_COLLECTIONS_SCHEMA = env("LMS_COLLECTIONS_SCHEMA", "encorepaydb")
+LMS_SCHEMA = env("LMS_SCHEMA", "encorebootdb")
 LMS_QUERY_TIMEOUT_MS = int(env("LMS_QUERY_TIMEOUT_MS", "30000"))
-# Optional. One SELECT that returns account_id, name, mobile (in that order). Used to fill the borrower name
-# and phone once `manage.py lms_introspect` has shown which tables hold them. Run read-only; PII stays in the CRM DB only.
-LMS_BORROWER_SQL = env("LMS_BORROWER_SQL", "")
 
 LOGGING = {
     "version": 1,

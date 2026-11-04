@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, inr } from "./api.js";
 
 const STATUSES = [
-  ["new", "New"], ["contacted", "Contacted"], ["promised", "Promise to pay"],
+  ["new", "New"], ["contacted", "Contacted"], ["reference_contacted", "Reference contacted"], ["promised", "Promise to pay"],
   ["not_reachable", "Not reachable"], ["dispute", "Dispute"], ["paid", "Paid"],
 ];
 const label = Object.fromEntries(STATUSES);
@@ -114,43 +114,64 @@ export default function Loans({ user }) {
 function Detail({ loan, onClose, onSaved }) {
   const [status, setStatus] = useState(loan.crm_status);
   const [note, setNote] = useState(loan.note);
-  const [number, setNumber] = useState("");
+  const [shown, setShown] = useState({}); // contact key -> full number, only while visible
   const [error, setError] = useState("");
+  const timers = useRef({});
 
-  useEffect(() => {
-    if (!number) return undefined;
-    const t = setTimeout(() => setNumber(""), 20000); // hide the number again
-    return () => clearTimeout(t);
-  }, [number]);
+  useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), []);
 
   async function save() {
     setError("");
     try { onSaved(await api(`/loans/${loan.id}`, { method: "PATCH", body: { crm_status: status, note } })); }
     catch (e) { setError(e.message); }
   }
-  async function reveal() {
+  async function reveal(key) {
     setError("");
-    try { setNumber((await api(`/loans/${loan.id}/mobile`, { method: "POST" })).mobile); }
-    catch (e) { setError(e.message); }
+    try {
+      const d = await api(`/loans/${loan.id}/mobile`, { method: "POST", body: { which: key } });
+      setShown((s) => ({ ...s, [key]: d.mobile }));
+      clearTimeout(timers.current[key]);
+      timers.current[key] = setTimeout(() => setShown((s) => ({ ...s, [key]: undefined })), 20000); // hide again
+    } catch (e) { setError(e.message); }
   }
 
+  const contacts = loan.contacts || [];
   return (
     <aside className="drawer card" role="dialog" aria-label={`Account ${loan.account_id}`}>
       <div className="row"><h2>{loan.account_id}</h2><span className="grow" /><button className="ghost" onClick={onClose}>Close</button></div>
       <dl>
         <dt>Borrower</dt><dd>{loan.borrower_name || "—"}</dd>
-        <dt>Mobile</dt>
-        <dd>
-          {number || loan.mobile || "—"}{" "}
-          {loan.mobile && !number && <button className="ghost" onClick={reveal}>Show number</button>}
-          {number && <span className="muted small"> (hides in 20 s, this view is logged)</span>}
-        </dd>
         <dt>Overdue</dt><dd>{inr(loan.overdue_amount)} ({inr(loan.demand_due)} dues + {inr(loan.fee_due)} fees)</dd>
         <dt>Outstanding</dt><dd>{inr(loan.outstanding)}</dd>
         <dt>Instalment</dt><dd>{inr(loan.installment_amount)}</dd>
         <dt>Days past due</dt><dd>{loan.dpd}</dd>
+        <dt>Oldest due</dt><dd>{loan.oldest_due_date || "—"}</dd>
+        <dt>Last payment</dt><dd>{loan.last_repayment_date || "—"}</dd>
         <dt>Product / branch</dt><dd>{loan.product_code || "—"} / {loan.branch_code || "—"}</dd>
       </dl>
+
+      <section>
+        <h3>Who to call</h3>
+        {contacts.length === 0 && <p className="muted small">No phone numbers on file.</p>}
+        <ul className="contacts">
+          {contacts.map((c) => (
+            <li key={c.key}>
+              <div>
+                <strong>{c.label}</strong>
+                {c.name && c.key !== "borrower" && c.key !== "alt" ? ` · ${c.name}` : ""}
+                {c.relation ? <span className="muted"> ({c.relation})</span> : null}
+              </div>
+              <div className="row">
+                <span>{shown[c.key] || c.mobile}</span>
+                {!shown[c.key] && <button className="ghost" onClick={() => reveal(c.key)}>Show number</button>}
+              </div>
+            </li>
+          ))}
+        </ul>
+        {Object.values(shown).some(Boolean) && <p className="muted small">Numbers hide again after 20 seconds. Each view is logged.</p>}
+        {contacts.some((c) => c.key.startsWith("ref")) && <p className="muted small">If the borrower cannot be reached, call a reference and set the status to “Reference contacted”.</p>}
+      </section>
+
       <label>Status
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
           {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

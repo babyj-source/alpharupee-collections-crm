@@ -12,7 +12,8 @@ What exists now, how to put it on UAT, and what is still assumed.
 | Roles | `head` sees everything, assigns accounts to agents, sees the dashboard by agent. `agent` sees only the accounts assigned to them. Every query goes through one scoping function; tests cover it. |
 | Portal | Head: dashboard (DPD buckets, overdue by agent, last sync), all accounts with filters and bulk assign. Agent: own summary and worklist, status and note per account. |
 | Phone numbers | The API only ever returns a masked number. "Show number" is a separate call, limited to the user's own accounts, rate limited, written to the audit log, hidden again after 20 seconds in the UI. |
-| LMS sync | Read-only. Copies `encorepaydb.accounts` and the latest `collection_items` row per account every 15 minutes. LMS-owned columns are overwritten; CRM-owned columns (assignee, status, note) never are. Failures are recorded and shown to the head. |
+| LMS sync | Read-only, from `encorebootdb` only: the view `loan_od_account_view` (status, DPD, dues, balance, primary holder = lowest `holder_num`) and `customers` (phones and reference contacts). Runs every 15 minutes. LMS-owned columns are overwritten; CRM-owned columns (assignee, status, note) never are. Failures are recorded and shown to the head. |
+| Reference contacts | Up to two references per customer (name, relationship, number) from the customer master, shown under "Who to call" so an agent can call a reference when the borrower cannot be reached. Masked like the borrower's number; each reveal is logged with whose number it was (`borrower`, `alt`, `ref1`, `ref2`). Status "Reference contacted" exists for this. |
 | No Django admin | It would allow password-only sign-in and skip the OTP. Users are created from the server shell. |
 
 Not in this increment: campaigns (Smartflo), SMS and WhatsApp sends (MSG91), Push to Deal, CRIF. Those follow.
@@ -28,7 +29,7 @@ Not in this increment: campaigns (Smartflo), SMS and WhatsApp sends (MSG91), Pus
 
    Press Enter to skip MSG91 and Smartflo for now; run it again later. It reads the LMS details from the Secrets Manager secret `alpharupee/lms/readonlyuser` by itself. If `.env` already exists, only add the LMS settings: `bash /opt/crm/current/server-tools/set-lms.sh`.
 
-2. **GitHub variable.** Environments, `uat`, variable `HEALTH_URL`: change to `http://127.0.0.1/api/health`. This checks Django and the database, not just nginx.
+2. **GitHub variable.** Environments, `uat`, variable `HEALTH_URL`: change to `https://uat-crm.alpharupee.in/api/health`. This checks Django and the database, not just nginx. It must be the HTTPS address: once HTTPS is on, port 80 only redirects and answers 404 to `127.0.0.1`.
 
 3. **Push.** Copy the new files into your clone, commit on a branch, open a pull request, wait for CI (shell checks, backend tests on PostgreSQL 17, front-end build), merge. The merge deploys UAT. The React app replaces the prototype at `https://uat-crm.alpharupee.in/`.
 
@@ -52,27 +53,37 @@ Not in this increment: campaigns (Smartflo), SMS and WhatsApp sends (MSG91), Pus
    sudo bash /opt/crm/current/server-tools/install-sync-timer.sh
    ```
 
-6. **MSG91.** Run `setup-env.sh` again (it asks before overwriting) or edit nothing by hand: the key and the OTP template id go in through the hidden prompts. The template must contain one variable for the code (MSG91 default `##OTP##`). Then `sudo systemctl restart crm` is done by the next deploy, or run it from a Session Manager prompt.
+6. **MSG91 and Smartflo keys**, one at a time, typed hidden (the OTP template id is already saved):
 
-## Borrower names and phone numbers
+   ```
+   bash /opt/crm/current/server-tools/set-secret.sh MSG91_AUTHKEY
+   bash /opt/crm/current/server-tools/set-secret.sh SMARTFLO_API_TOKEN
+   sudo systemctl restart crm
+   ```
 
-The sync reads only columns I could confirm (`encorepaydb.accounts` and `collection_items`). The customer identity tables were deliberately not read. To fill names and numbers:
+   The MSG91 template must contain one variable for the code (MSG91 default `##OTP##`).
+
+## Names, numbers and references
+
+Copied for **active loans only** (closed loans get no new contact details). Only these customer columns are read: `phone1`, `phone2`, `reference_name`, `reference_phone`, `reference_relationship_type` and the same three with suffix `2`. Date of birth, PAN, addresses, e-mail and documents are never selected; a test guards the column list.
+
+After the first sync, check the numbers against what you expect. This prints counts only (no names, no numbers):
 
 ```
-../venv/bin/python manage.py lms_introspect
+cd /opt/crm/current/backend && set -a && . /opt/crm/shared/.env && set +a
+../venv/bin/python manage.py lms_profile
 ```
-
-It prints table and column names only (no data) for tables that look like customer, holder or phone. Send me that output and I will write the one SELECT for `LMS_BORROWER_SQL` (columns: account id, name, mobile). Until then the portal shows accounts without names and without a number to reveal.
 
 ## Assumptions to confirm against the LMS
 
 | Assumption | If wrong |
 |---|---|
 | Overdue = `demand_due + fee_due` | One line in `loans/models.py` and `loans/views.py` |
-| `collection_items` may hold several rows per account; the highest `id` is current | One line in `loans/sync.py` |
-| `operational_status` 0 = active, 2 = closed, 1 = unknown (treated as not active) | Filter in `loans/views.py` |
+| A joint loan has several rows in `loan_od_account_view`; the primary holder is the lowest `holder_num` | One line in `loans/sync.py` |
+| `operational_status` 0 = active, 2 = closed, 1 = unknown (treated as not active) | `ACTIVE_Q` in `loans/models.py`; `lms_profile` prints the status counts |
 | `balance` is negative when money is owed; shown as `abs(balance)` | Display only |
-| DPD comes from `collection_items.dpd` and should match the schedule-based overdue count | Compare after the first sync: counts of accounts with `dpd > 0` here and the 939 overdue accounts found earlier |
+| DPD comes from `loan_od_account_view.dpd` and should match the schedule-based overdue count | `lms_profile` prints the number of active accounts with `dpd > 0`; compare it with the 939 overdue accounts found earlier |
+| `total_demand_due_magnitude` already includes principal, interest and penal due (fees are separate) | `lms_profile` prints how many rows differ |
 | The LMS TLS link is encrypted but its certificate is not verified | Provide the CA file and set `LMS_DB_SSL_CA` |
 
 ## Security notes
