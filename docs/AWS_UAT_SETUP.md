@@ -3,12 +3,14 @@
 Result: a UAT server (Ubuntu 24.04, nginx) and a separate private PostgreSQL database in AWS Mumbai (`ap-south-1`).
 Every merge to `main` then deploys to it through GitHub.
 
+No CloudShell or CLI? Use `docs/AWS_UAT_MANUAL.md`, which builds the same thing by clicking in the Console.
+
 Time: about 40 minutes, of which about 12 are waiting for AWS.
 
 | Resource | Setting |
 |---|---|
 | Application server | EC2 `t3.medium`, 30 GB encrypted disk, fixed IP, Session Manager access (no SSH password, no ec2 key pair) |
-| Database | RDS PostgreSQL 16, `db.t4g.medium`, 50 GB, encrypted, private subnets, 7-day backups, deletion protection; password managed by AWS |
+| Database | RDS PostgreSQL 17, `db.t4g.medium`, 50 GB, encrypted, private subnets, 7-day backups, deletion protection; password managed by AWS |
 | Network | Own VPC `10.20.0.0/16`. Database accepts connections only from the application server |
 | Access | Ports 80/443 to everyone (narrow it in `env/uat.env` if UAT should be private), port 22 key-only for the `deploy` user |
 

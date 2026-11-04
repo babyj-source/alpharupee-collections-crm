@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
+# Builds the first-boot script for the application server, for pasting into the EC2 console.
+# Runs on your own computer (Mac or Linux); needs no AWS access.
+#
+#   bash infra/aws/render-user-data.sh uat ~/crm-keys/crm_deploy_uat.pub
+#
+# Writes ./crm-<env>-user-data.sh   (contains only the PUBLIC key, no secrets)
 set -euo pipefail
 ENV_NAME="${1:?usage: render-user-data.sh uat|production PATH_TO_PUBLIC_KEY}"
 PUBKEY_PATH="${2:?usage: render-user-data.sh uat|production PATH_TO_PUBLIC_KEY}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck disable=SC1090
 source "$HERE/env/$ENV_NAME.env"
 
 [ -f "$PUBKEY_PATH" ] || { echo "Public key not found: $PUBKEY_PATH"; exit 1; }

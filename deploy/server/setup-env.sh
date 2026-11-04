@@ -5,7 +5,7 @@
 #
 # - reads the database admin password from AWS Secrets Manager (never shown)
 # - creates the application database user with its own random password
-# - asks you, with hidden input, for the MSG91 / Smartflo / LMS values
+# - asks you, with hidden input, for the MSG91 / Smartflo values; LMS details are read from Secrets Manager (set-lms.sh)
 # - writes /opt/crm/shared/.env (mode 600)
 # Nothing typed here appears on screen, in shell history, or in chat.
 set -euo pipefail
@@ -51,10 +51,6 @@ echo "Now the integration values. Press Enter to skip any you do not have yet (r
 MSG91_AUTHKEY="$(askhidden 'MSG91 auth key')"
 MSG91_OTP_TEMPLATE_ID="$(asktext 'MSG91 OTP template id (not secret)')"
 SMARTFLO_API_TOKEN="$(askhidden 'Smartflo API token')"
-LMS_DB_HOST="$(asktext 'LMS replica host (blank if not ready)')"
-LMS_DB_NAME="$(asktext 'LMS replica database name')"
-LMS_DB_USER="$(asktext 'LMS replica read-only user')"
-LMS_DB_PASSWORD="$(askhidden 'LMS replica password')"
 
 umask 077
 {
@@ -69,11 +65,10 @@ umask 077
   echo "MSG91_AUTHKEY=$MSG91_AUTHKEY"
   echo "MSG91_OTP_TEMPLATE_ID=$MSG91_OTP_TEMPLATE_ID"
   echo "SMARTFLO_API_TOKEN=$SMARTFLO_API_TOKEN"
-  echo "LMS_DB_HOST=$LMS_DB_HOST"
-  echo "LMS_DB_PORT=5432"
-  echo "LMS_DB_NAME=$LMS_DB_NAME"
-  echo "LMS_DB_USER=$LMS_DB_USER"
-  echo "LMS_DB_PASSWORD=$LMS_DB_PASSWORD"
+  echo "LMS_TENANT_CODE=NBFC1"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 echo "Written $ENV_FILE (readable only by the deploy user)."
+
+# LMS connection details come from AWS Secrets Manager, never typed or pasted.
+bash "$(dirname "$0")/set-lms.sh" || echo "LMS details not set yet. Run set-lms.sh when the secret is readable."

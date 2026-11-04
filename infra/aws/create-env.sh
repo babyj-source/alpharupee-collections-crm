@@ -152,7 +152,7 @@ INSTANCE_ID="$(aws ec2 describe-instances \
 if [ -z "$INSTANCE_ID" ]; then
   AMI="$(aws ssm get-parameter --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query Parameter.Value --output text)"
   UD="$(mktemp)"
-  b64() { base64 -w0 "$1"; }
+  b64() { base64 < "$1" | tr -d "\n"; }
   sed -e "s|__DOMAIN__|$DOMAIN|g" \
       -e "s|__DEPLOY_PUBKEY__|$DEPLOY_PUBKEY|g" \
       -e "s|__SUDOERS_B64__|$(b64 "$ROOT/deploy/server/sudoers-deploy")|" \
@@ -161,7 +161,7 @@ if [ -z "$INSTANCE_ID" ]; then
       "$HERE/user-data.sh" > "$UD"
   SIZE="$(wc -c < "$UD")"; [ "$SIZE" -lt 16000 ] || { echo "user-data is $SIZE bytes, over the 16 KB limit"; exit 1; }
   INSTANCE_ID="$(aws ec2 run-instances --image-id "$AMI" --instance-type "$APP_INSTANCE_TYPE" \
-    --subnet-id "$PUB_A" --security-group-ids "$APP_SG" --iam-instance-profile "Name=$ROLE" \
+    --subnet-id "$PUB_A" --associate-public-ip-address --security-group-ids "$APP_SG" --iam-instance-profile "Name=$ROLE" \
     --metadata-options HttpTokens=required,HttpEndpoint=enabled,HttpPutResponseHopLimit=1 \
     --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$APP_DISK_GB,VolumeType=gp3,Encrypted=true,DeleteOnTermination=true}" \
     --user-data "file://$UD" \

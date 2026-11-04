@@ -9,4 +9,12 @@ build/
 *_deploy_key.pub
 release.tgz
 .DS_Store
+crm_deploy_*
+!crm_deploy_*.pub
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+
+# generated server bootstrap (contains the public deploy key and domain)
 crm-*-user-data.sh
