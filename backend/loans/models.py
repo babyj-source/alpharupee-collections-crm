@@ -47,6 +47,8 @@ class Loan(models.Model):
     balance = models.DecimalField(max_digits=16, decimal_places=2, default=0, help_text="as in the LMS (negative = owed)")
     installment_amount = models.DecimalField(max_digits=16, decimal_places=2, default=0)
     dpd = models.IntegerField(default=0)
+    closure_amount = models.DecimalField(max_digits=16, decimal_places=2, default=0, help_text="to close the loan as on closure_as_on")
+    closure_as_on = models.DateField(null=True, blank=True, help_text="LMS working date the closure amount is for")
 
     # ---- contact details copied from the LMS for active loans only; masked in the API
     borrower_name = models.CharField(max_length=160, blank=True)

@@ -63,6 +63,25 @@ class SyncTests(TestCase):
         self.assertEqual(loan.dpd, 20)
         self.assertEqual((loan.crm_status, loan.note), ("promised", "calls on Friday"))
 
+    def test_closure_amount_is_built_from_the_lms_parts(self):
+        # Values taken from a real overdue account: 5,000 principal, 7,875 interest due, 87.50 accrued.
+        row = acct("CL1", 900, Decimal("12875"))
+        row.update(balance_magnitude=Decimal("-5000"), total_normal_interest_due_magnitude=Decimal("7875"),
+                   total_penal_interest_due_magnitude=Decimal("0"), total_fee_due_magnitude=Decimal("0"),
+                   booked_not_due_normal_interest_magnitude=Decimal("87.5"),
+                   booked_not_due_penal_interest_magnitude=Decimal("0"), current_working_date=date(2026, 11, 5))
+        fees = acct("CL2", 10, Decimal("100"), Decimal("25"))
+        fees.update(balance_magnitude=Decimal("-1000"), total_normal_interest_due_magnitude=Decimal("60"),
+                    total_penal_interest_due_magnitude=Decimal("40"), booked_not_due_penal_interest_magnitude=Decimal("5.5"))
+        closed = acct("CL3", status=2)
+        closed.update(booked_not_due_normal_interest_magnitude=Decimal("9"))
+        run_sync(FakeReader([row, fees, closed], [cust("CCL1"), cust("CCL2"), cust("CCL3")]))
+        a, b, c = (Loan.objects.get(account_id=i) for i in ("CL1", "CL2", "CL3"))
+        self.assertEqual(a.closure_amount, Decimal("12962.50"))
+        self.assertEqual(a.closure_as_on, date(2026, 11, 5))
+        self.assertEqual(b.closure_amount, Decimal("1130.50"))   # 1000 + 60 + 40 + 25 fee + 5.50
+        self.assertEqual(c.closure_amount, Decimal("0"))         # closed loans owe nothing
+
     def test_reference_comes_from_the_account_udf_fields(self):
         run_sync(FakeReader(
             [acct("U1", udf=("Kamlesh Panchal", "9998637311", "Friend")),

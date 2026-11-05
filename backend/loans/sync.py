@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 LMS_FIELDS = [
     "customer_id", "product_code", "branch_code", "operational_status", "oldest_due_date", "last_repayment_date",
-    "demand_due", "fee_due", "balance", "installment_amount", "dpd",
+    "demand_due", "fee_due", "balance", "installment_amount", "dpd", "closure_amount", "closure_as_on",
 ]
 CONTACT_FIELDS = [
     "borrower_name", "borrower_mobile", "alt_mobile",
@@ -21,6 +21,20 @@ CONTACT_FIELDS = [
 
 def _dec(v):
     return Decimal(str(v)) if v is not None else Decimal(0)
+
+
+def closure_amount(acc):
+    """What the borrower must pay today to close the loan, built from the LMS view (the LMS has no ready value):
+    principal outstanding + interest and penal interest already due + fees due + interest booked but not yet due.
+    total_demand_due already holds principal due, so it is not added again (checked on the live LMS data)."""
+    return (
+        abs(_dec(acc.get("balance_magnitude")))
+        + _dec(acc.get("total_normal_interest_due_magnitude"))
+        + _dec(acc.get("total_penal_interest_due_magnitude"))
+        + _dec(acc.get("total_fee_due_magnitude"))
+        + _dec(acc.get("booked_not_due_normal_interest_magnitude"))
+        + _dec(acc.get("booked_not_due_penal_interest_magnitude"))
+    ).quantize(Decimal("0.01"))
 
 
 def _int(v):
@@ -119,6 +133,8 @@ def run_sync(reader):
                 "balance": _dec(acc.get("balance_magnitude")),
                 "installment_amount": _dec(acc.get("installment_amount_magnitude")),
                 "dpd": _int(acc.get("dpd")),
+                "closure_amount": closure_amount(acc) if _is_active(status) else Decimal(0),
+                "closure_as_on": acc.get("current_working_date"),
             }
             contacts = _contacts(acc, customers.get(str(acc.get("customer_id")))) if _is_active(status) else {}
             loan = existing.get(aid)
