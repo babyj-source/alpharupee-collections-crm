@@ -102,9 +102,9 @@ X_FRAME_OPTIONS = "DENY"
 # ---- API
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsSettled"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min"},
     "NUM_PROXIES": int(env("NUM_PROXIES", "1")),  # nginx. Use 2 when Cloudflare is switched on.
     "DEFAULT_PAGINATION_CLASS": "loans.pagination.Page",
     "PAGE_SIZE": 50,

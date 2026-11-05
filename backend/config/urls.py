@@ -16,5 +16,6 @@ def health(_request):
 urlpatterns = [
     path("api/health", health),
     path("api/auth/", include("accounts.urls")),
+    path("api/", include("accounts.api_urls")),
     path("api/", include("loans.urls")),
 ]

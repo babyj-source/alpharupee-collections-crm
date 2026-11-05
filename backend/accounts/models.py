@@ -4,6 +4,7 @@ from django.utils import timezone
 
 
 class Role(models.TextChoices):
+    ADMIN = "admin", "Admin"
     HEAD = "head", "Head"
     AGENT = "agent", "Agent"
 
@@ -28,6 +29,7 @@ class User(AbstractBaseUser):
     mobile = models.CharField(max_length=15, help_text="Digits only with country code, e.g. 919876543210")
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.AGENT)
     is_active = models.BooleanField(default=True)
+    must_change_password = models.BooleanField(default=False, help_text="set after an administrator creates or resets the password")
     failed_logins = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -41,7 +43,12 @@ class User(AbstractBaseUser):
 
     @property
     def is_head(self):
-        return self.role == Role.HEAD
+        """Head-level access (all accounts, allocation, reports). The administrator has it too."""
+        return self.role in (Role.HEAD, Role.ADMIN)
+
+    @property
+    def is_admin(self):
+        return self.role == Role.ADMIN
 
     @property
     def is_locked(self):

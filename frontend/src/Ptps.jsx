@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, inr } from "./api.js";
+import { api, inr, isHead } from "./api.js";
 import Account, { ptpChip } from "./Account.jsx";
 
 const STATES = [["open", "Open"], ["today", "Due today"], ["lapsed", "Lapsed"], ["closed", "Closed"], ["all", "All"]];
 const fmt = (d) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
 export default function Ptps({ user }) {
-  const isHead = user.role === "head";
+  const head = isHead(user);
   const [state, setState] = useState("open");
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ results: [], count: 0 });
@@ -41,7 +41,7 @@ export default function Ptps({ user }) {
           <thead>
             <tr>
               <th>Account</th><th>Borrower</th><th>Promise date</th><th className="r">Promised</th><th className="r">Overdue now</th>
-              <th>State</th><th>Reason</th>{isHead && <th>Agent</th>}<th />
+              <th>State</th><th>Reason</th>{head && <th>Agent</th>}<th />
             </tr>
           </thead>
           <tbody>
@@ -54,7 +54,7 @@ export default function Ptps({ user }) {
                 <td className="r">{inr(p.overdue_amount)}</td>
                 <td><span className={`chip ${p.state}`}>{ptpChip[p.state]}</span></td>
                 <td>{p.reason_label}</td>
-                {isHead && <td>{p.agent_name || <span className="muted">Unassigned</span>}</td>}
+                {head && <td>{p.agent_name || <span className="muted">Unassigned</span>}</td>}
                 <td onClick={(e) => e.stopPropagation()}>
                   {p.status === "open" && (
                     <span className="row">

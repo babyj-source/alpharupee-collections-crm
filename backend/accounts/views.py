@@ -6,7 +6,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -28,7 +28,8 @@ def _burn_time():
 
 
 def user_payload(user):
-    return {"id": user.pk, "email": user.email, "name": user.name, "role": user.role}
+    return {"id": user.pk, "email": user.email, "name": user.name, "role": user.role,
+            "must_change_password": user.must_change_password}
 
 
 class CsrfView(APIView):
@@ -139,6 +140,8 @@ class ResendView(APIView):
 
 
 class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]  # also for a user who still has to change the password
+
     def post(self, request):
         audit(request, "logout", user=request.user)
         logout(request)
@@ -146,5 +149,7 @@ class LogoutView(APIView):
 
 
 class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         return Response({"user": user_payload(request.user)})

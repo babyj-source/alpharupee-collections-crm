@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, inr } from "./api.js";
+import { api, inr, isHead } from "./api.js";
 import Account, { ptpChip } from "./Account.jsx";
 
 const STATUSES = [
@@ -16,7 +16,7 @@ const VIEWS = {
 
 // mode: "worklist" opens on overdue accounts, "customers" on everything allocated (the agent's "My customers").
 export default function Loans({ user, mode = "worklist" }) {
-  const isHead = user.role === "head";
+  const head = isHead(user);
   const [filters, setFilters] = useState({ q: "", view: mode === "customers" ? "all" : "overdue", crm_status: "", agent: "" });
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ results: [], count: 0 });
@@ -39,8 +39,8 @@ export default function Loans({ user, mode = "worklist" }) {
 
   useEffect(load, [load]);
   useEffect(() => {
-    if (isHead) api("/agents").then(setAgents).catch(() => {});
-  }, [isHead]);
+    if (head) api("/agents").then(setAgents).catch(() => {});
+  }, [head]);
 
   const set = (k) => (e) => { setFilters({ ...filters, [k]: e.target.value }); setPage(1); setPicked(new Set()); };
   const toggle = (id) => { const s = new Set(picked); s.has(id) ? s.delete(id) : s.add(id); setPicked(s); };
@@ -66,7 +66,7 @@ export default function Loans({ user, mode = "worklist" }) {
           <option value="">Any status</option>
           {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
-        {isHead && (
+        {head && (
           <select value={filters.agent} onChange={set("agent")} aria-label="Agent">
             <option value="">Any agent</option><option value="none">Unassigned</option>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -74,14 +74,14 @@ export default function Loans({ user, mode = "worklist" }) {
         )}
       </div>
 
-      {isHead && (
+      {head && (
         <div className="row small">
           <a href={`/api/loans/export.csv?${query()}`} download>Download these accounts (CSV)</a>
           <span className="muted">Numbers are masked in the file; each download is logged.</span>
         </div>
       )}
 
-      {isHead && picked.size > 0 && (
+      {head && picked.size > 0 && (
         <div className="card row">
           <span>{picked.size} selected</span>
           <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)}>
@@ -97,15 +97,15 @@ export default function Loans({ user, mode = "worklist" }) {
         <table>
           <thead>
             <tr>
-              {isHead && <th />}
+              {head && <th />}
               <th>Account</th><th>Borrower</th><th className="r">DPD</th><th className="r">Overdue</th>
-              <th>Status</th><th>Last outcome</th><th>Promise</th>{isHead && <th>Agent</th>}
+              <th>Status</th><th>Last outcome</th><th>Promise</th>{head && <th>Agent</th>}
             </tr>
           </thead>
           <tbody>
             {data.results.map((l) => (
               <tr key={l.id} className="click" onClick={() => setOpen(l)}>
-                {isHead && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={picked.has(l.id)} onChange={() => toggle(l.id)} aria-label={`Select ${l.account_id}`} /></td>}
+                {head && <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={picked.has(l.id)} onChange={() => toggle(l.id)} aria-label={`Select ${l.account_id}`} /></td>}
                 <td>{l.account_id}</td>
                 <td>{l.borrower_name || <span className="muted">—</span>}</td>
                 <td className="r">{l.dpd}</td>
@@ -113,7 +113,7 @@ export default function Loans({ user, mode = "worklist" }) {
                 <td>{label[l.crm_status]}</td>
                 <td>{l.last_disposition_label || <span className="muted">Not called</span>}</td>
                 <td>{l.open_ptp ? <span className={`chip ${l.open_ptp.state}`}>{ptpChip[l.open_ptp.state]} · {new Date(`${l.open_ptp.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span> : <span className="muted">—</span>}</td>
-                {isHead && <td>{l.agent ? l.agent.name : <span className="muted">Unassigned</span>}</td>}
+                {head && <td>{l.agent ? l.agent.name : <span className="muted">Unassigned</span>}</td>}
               </tr>
             ))}
             {data.results.length === 0 && <tr><td colSpan="9" className="muted">Nothing to show.</td></tr>}
