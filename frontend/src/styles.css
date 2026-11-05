@@ -75,3 +75,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .side-foot .ghost { padding-left: 0; }
 .chip.due { background: color-mix(in srgb, var(--err) 22%, transparent); }
+
+.daybars { display: flex; align-items: flex-end; gap: 3px; height: 160px; margin: 8px 0; }
+.daybar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.bar-fill.v { width: 100%; height: auto; border-radius: 3px 3px 0 0; }

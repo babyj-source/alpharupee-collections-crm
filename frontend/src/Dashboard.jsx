@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, inr, num } from "./api.js";
+import { api, inr, isHead, num } from "./api.js";
 
 export default function Dashboard({ user }) {
   const [d, setD] = useState(null);
@@ -49,7 +49,7 @@ export default function Dashboard({ user }) {
         </table>
       </section>
 
-      {user.role === "head" && d.by_agent && (
+      {isHead(user) && d.by_agent && (
         <section className="card">
           <h2>Overdue by agent</h2>
           <table>
@@ -66,7 +66,7 @@ export default function Dashboard({ user }) {
         </section>
       )}
 
-      {user.role === "head" && (
+      {isHead(user) && (
         <p className="muted small">
           {d.sync
             ? d.sync.ok

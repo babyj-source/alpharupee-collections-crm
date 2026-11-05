@@ -17,6 +17,7 @@ class Command(BaseCommand):
         p.add_argument("--mobile", required=True, help="digits with country code, e.g. 919876543210")
         p.add_argument("--role", choices=[r.value for r in Role], default=Role.AGENT)
         p.add_argument("--update", action="store_true", help="change an existing user (asks for a new password)")
+        p.add_argument("--must-change", action="store_true", help="make the user choose their own password at first sign-in")
         p.add_argument("--password-env", help="read the password from this environment variable instead of asking")
 
     def handle(self, *a, **o):
@@ -40,9 +41,11 @@ class Command(BaseCommand):
         if existing:
             existing.name, existing.mobile, existing.role = o["name"], mobile, o["role"]
             existing.failed_logins, existing.locked_until, existing.is_active = 0, None, True
+            existing.must_change_password = bool(o["must_change"])
             existing.set_password(pw)
             existing.save()
             self.stdout.write(f"Updated {email} ({existing.role})")
         else:
-            u = User.objects.create_user(email, pw, name=o["name"], mobile=mobile, role=o["role"])
+            u = User.objects.create_user(email, pw, name=o["name"], mobile=mobile, role=o["role"],
+                                         must_change_password=bool(o["must_change"]))
             self.stdout.write(f"Created {email} ({u.role})")

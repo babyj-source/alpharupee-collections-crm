@@ -31,3 +31,22 @@ PTP_REASONS = {
     "dispute_amount": "Dispute about the amount",
     "unwilling": "Unwilling to pay",
 }
+
+# Outcomes where the borrower (or someone for them) was actually spoken to. Used for the contact rate in the MIS.
+CONNECTED = {"ptp_given", "paid_today", "will_pay_no_date", "refuses", "dispute", "needs_senior", "reference_contacted"}
+
+# Collection buckets. The same four are the campaign pools for the dialler: (key, label, lowest DPD, highest DPD or None).
+BUCKETS = [
+    ("dpd0", "0 DPD", 0, 0),
+    ("dpd1_7", "1-7 DPD", 1, 7),
+    ("dpd8_15", "8-15 DPD", 8, 15),
+    ("dpd16", "16+ DPD", 16, None),
+]
+BUCKET_KEYS = {b[0]: b for b in BUCKETS}
+
+
+def bucket_key(dpd):
+    for key, _label, lo, hi in BUCKETS:
+        if dpd >= lo and (hi is None or dpd <= hi):
+            return key
+    return BUCKETS[0][0]

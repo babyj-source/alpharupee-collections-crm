@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, inr } from "./api.js";
+import { api, inr, isHead } from "./api.js";
 import Account from "./Account.jsx";
 
 const STATES = [["pending", "All pending"], ["due", "Due now"], ["today", "Today"], ["upcoming", "Upcoming"]];
@@ -7,7 +7,7 @@ const label = { due: "Due now", today: "Today", upcoming: "Upcoming" };
 const when = (t) => new Date(t).toLocaleString("en-IN", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
 export default function Callbacks({ user }) {
-  const isHead = user.role === "head";
+  const head = isHead(user);
   const [state, setState] = useState("pending");
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ results: [], count: 0 });
@@ -42,7 +42,7 @@ export default function Callbacks({ user }) {
           <thead>
             <tr>
               <th>Call back at</th><th>State</th><th>Account</th><th>Borrower</th><th className="r">DPD</th>
-              <th className="r">Overdue</th><th>Last outcome</th>{isHead && <th>Agent</th>}<th />
+              <th className="r">Overdue</th><th>Last outcome</th>{head && <th>Agent</th>}<th />
             </tr>
           </thead>
           <tbody>
@@ -55,7 +55,7 @@ export default function Callbacks({ user }) {
                 <td className="r">{c.dpd}</td>
                 <td className="r">{inr(c.overdue_amount)}</td>
                 <td>{c.last_disposition_label || "—"}</td>
-                {isHead && <td>{c.agent_name || <span className="muted">Unassigned</span>}</td>}
+                {head && <td>{c.agent_name || <span className="muted">Unassigned</span>}</td>}
                 <td onClick={(e) => e.stopPropagation()}><button className="ghost" onClick={() => done(c)}>Mark done</button></td>
               </tr>
             ))}
