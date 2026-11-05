@@ -4,6 +4,8 @@ import Login from "./Login.jsx";
 import Dashboard from "./Dashboard.jsx";
 import Loans from "./Loans.jsx";
 import Logo from "./Logo.jsx";
+import Ptps from "./Ptps.jsx";
+import Allocation from "./Allocation.jsx";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking
@@ -27,6 +29,9 @@ export default function App() {
     }
   };
   const isHead = user.role === "head";
+  const tabs = isHead
+    ? [["dashboard", "Dashboard"], ["loans", "All accounts"], ["ptps", "Promises"], ["allocation", "Allocation"]]
+    : [["dashboard", "My summary"], ["loans", "My worklist"], ["customers", "My customers"], ["ptps", "Promises"]];
 
   return (
     <div className="shell">
@@ -34,12 +39,9 @@ export default function App() {
         <Logo height={30} />
         <strong className="product">CRM</strong>
         <nav>
-          <button className={tab === "dashboard" ? "tab on" : "tab"} onClick={() => setTab("dashboard")}>
-            {isHead ? "Dashboard" : "My summary"}
-          </button>
-          <button className={tab === "loans" ? "tab on" : "tab"} onClick={() => setTab("loans")}>
-            {isHead ? "All accounts" : "My worklist"}
-          </button>
+          {tabs.map(([id, text]) => (
+            <button key={id} className={tab === id ? "tab on" : "tab"} onClick={() => setTab(id)}>{text}</button>
+          ))}
         </nav>
         <span className="grow" />
         <span className="muted small">
@@ -49,7 +51,13 @@ export default function App() {
           Sign out
         </button>
       </header>
-      <main>{tab === "dashboard" ? <Dashboard user={user} /> : <Loans user={user} />}</main>
+      <main>
+        {tab === "dashboard" && <Dashboard user={user} />}
+        {tab === "loans" && <Loans user={user} />}
+        {tab === "customers" && <Loans user={user} mode="customers" />}
+        {tab === "ptps" && <Ptps user={user} />}
+        {tab === "allocation" && isHead && <Allocation />}
+      </main>
     </div>
   );
 }

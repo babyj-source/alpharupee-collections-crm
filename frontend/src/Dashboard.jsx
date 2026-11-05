@@ -22,6 +22,12 @@ export default function Dashboard({ user }) {
         <Kpi label="Overdue amount" value={inr(d.overdue_amount)} />
       </div>
 
+      <div className="kpis">
+        <Kpi label="Promises open" value={num(d.ptp.open.count)} sub={inr(d.ptp.open.amount)} />
+        <Kpi label="Promises due today" value={num(d.ptp.today.count)} sub={inr(d.ptp.today.amount)} />
+        <Kpi label="Promises lapsed" value={num(d.ptp.lapsed.count)} sub={inr(d.ptp.lapsed.amount)} />
+      </div>
+
       <section className="card">
         <h2>Overdue by days past due</h2>
         <table>
@@ -71,11 +77,12 @@ export default function Dashboard({ user }) {
   );
 }
 
-function Kpi({ label, value }) {
+function Kpi({ label, value, sub }) {
   return (
     <div className="card kpi">
       <div className="muted small">{label}</div>
       <div className="kpi-value">{value}</div>
+      {sub && <div className="muted small">{sub}</div>}
     </div>
   );
 }
