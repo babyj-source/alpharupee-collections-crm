@@ -1,5 +1,6 @@
 import csv
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Prefetch, Q, Sum
 from django.http import HttpResponse
@@ -14,7 +15,7 @@ from accounts.models import Role, User, audit
 from accounts.permissions import IsHead
 
 from .csvio import clean_text, safe_cell
-from .models import ACTIVE_Q, Activity, AllocationBatch, Loan, Ptp, ReferenceContact, SyncRun
+from .models import ACTIVE_Q, Activity, AllocationBatch, CallAccess, Loan, Ptp, ReferenceContact, SyncRun
 from .pagination import Page
 from .phones import normalise_mobile
 from .serializers import (
@@ -30,12 +31,20 @@ OVERDUE = ExpressionWrapper(F("demand_due") + F("fee_due"), output_field=Decimal
 BUCKETS = [("0", 0, 0), ("1-30", 1, 30), ("31-60", 31, 60), ("61-90", 61, 90), ("90+", 91, 10**6)]
 
 
-def scoped(user):
-    """Agents see only their own loans, the head sees all. Every loan query goes through this."""
+def scoped(user, grants=False):
+    """Agents see only their own loans, the head sees all. Every loan query goes through this.
+
+    grants=True is for the single-account screens only: it also lets an agent reach an account they are on a
+    dialler call with right now (see CallAccess). Lists, counts and the dashboard never include those."""
     qs = Loan.objects.select_related("assigned_agent").prefetch_related(
         "refs", Prefetch("ptps", queryset=Ptp.objects.filter(status=Ptp.State.OPEN), to_attr="open_ptps")
     )
-    return qs if user.is_head else qs.filter(assigned_agent=user)
+    if user.is_head:
+        return qs
+    if grants:
+        live = CallAccess.objects.filter(user=user, expires_at__gt=timezone.now()).values("loan_id")
+        return qs.filter(Q(assigned_agent=user) | Q(pk__in=live))
+    return qs.filter(assigned_agent=user)
 
 
 def _int_param(p, key):
@@ -79,10 +88,10 @@ class LoanListView(APIView):
 
 class LoanDetailView(APIView):
     def get(self, request, pk):
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)
 
     def patch(self, request, pk):
-        loan = get_object_or_404(scoped(request.user), pk=pk)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=pk)
         ser = LoanUpdateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         d = ser.validated_data
@@ -97,7 +106,7 @@ class LoanDetailView(APIView):
         for kind, detail in events:
             Activity.objects.create(loan=loan, user=request.user, kind=kind, detail=detail)
         audit(request, "loan_updated", user=request.user, object_type="loan", object_id=loan.pk, detail=loan.crm_status)
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)
 
 
 class RevealMobileView(APIView):
@@ -107,7 +116,7 @@ class RevealMobileView(APIView):
     throttle_scope = "reveal"
 
     def post(self, request, pk):
-        loan = get_object_or_404(scoped(request.user), pk=pk)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=pk)
         ser = RevealSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         which = ser.validated_data["which"]
@@ -204,7 +213,7 @@ class DispositionView(APIView):
 
     @transaction.atomic
     def post(self, request, pk):
-        get_object_or_404(scoped(request.user), pk=pk)  # visibility check: an agent only reaches own accounts
+        get_object_or_404(scoped(request.user, grants=True), pk=pk)  # visibility check: an agent only reaches own accounts
         ser = DispositionSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         d = ser.validated_data
@@ -235,12 +244,12 @@ class DispositionView(APIView):
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.DISPOSITION,
                                 disposition=d["code"], detail=detail[:300])
         audit(request, "disposition_saved", user=request.user, object_type="loan", object_id=loan.pk, detail=d["code"])
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)
 
 
 class TimelineView(APIView):
     def get(self, request, pk):
-        loan = get_object_or_404(scoped(request.user), pk=pk)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=pk)
         rows = loan.activities.select_related("user")[:100]
         return Response(ActivitySerializer(rows, many=True).data)
 
@@ -291,7 +300,7 @@ class ReferenceView(APIView):
     def _loan(self, request, pk, slot):
         if slot not in (1, 2):
             raise drf_serializers.ValidationError({"slot": "Slot must be 1 or 2."})
-        loan = get_object_or_404(scoped(request.user), pk=pk)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=pk)
         if loan.operational_status.strip().lower() not in ("0", "active"):
             raise drf_serializers.ValidationError({"detail": "This account is closed."})
         return loan
@@ -314,7 +323,7 @@ class ReferenceView(APIView):
         )
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.REFERENCE, detail=f"Reference {slot} saved")
         audit(request, "reference_saved", user=request.user, object_type="loan", object_id=loan.pk, detail=f"ref{slot}")
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)
 
     @transaction.atomic
     def delete(self, request, pk, slot):
@@ -324,7 +333,7 @@ class ReferenceView(APIView):
         )
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.REFERENCE, detail=f"Reference {slot} removed")
         audit(request, "reference_cleared", user=request.user, object_type="loan", object_id=loan.pk, detail=f"ref{slot}")
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)
 
 
 EXPORT_HEAD = [
@@ -389,6 +398,7 @@ class MetaView(APIView):
             "callback_step_minutes": CALLBACK_STEP_MINUTES,
             "dispositions": [{"code": k, "label": v[0], "group": v[1]} for k, v in DISPOSITIONS.items()],
             "ptp_reasons": [{"code": k, "label": v} for k, v in PTP_REASONS.items()],
+            "dialer_enabled": bool(settings.SMARTFLO_ENABLED and settings.SMARTFLO_API_TOKEN),
         })
 
 
@@ -418,10 +428,10 @@ class CallbackClearView(APIView):
 
     @transaction.atomic
     def delete(self, request, pk):
-        loan = get_object_or_404(scoped(request.user), pk=pk)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=pk)
         if loan.callback_at is None:
             return Response({"detail": "No call-back is pending on this account."}, status=400)
         Loan.objects.filter(pk=loan.pk).update(callback_at=None)
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.NOTE, detail="Call-back marked done")
         audit(request, "callback_cleared", user=request.user, object_type="loan", object_id=loan.pk)
-        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user, grants=True), pk=pk)).data)

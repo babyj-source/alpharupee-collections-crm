@@ -17,12 +17,14 @@ function addDays(iso, n) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-export default function Account({ loan: first, onClose, onChanged }) {
+// outcomePath: send the outcome somewhere else (the Dialer screen saves it and releases the agent in Smartflo).
+export default function Account({ loan: first, onClose, onChanged, outcomePath, onDialer }) {
   const [loan, setLoan] = useState(first);
   const [meta, setMeta] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [shown, setShown] = useState({}); // contact key -> full number, only while visible
   const [error, setError] = useState("");
+  const [calling, setCalling] = useState("");
   const timers = useRef({});
 
   useEffect(() => { setLoan(first); }, [first]);
@@ -37,6 +39,13 @@ export default function Account({ loan: first, onClose, onChanged }) {
     setError("");
     try { updated(await api(`/loans/${loan.id}/callback`, { method: "DELETE" })); }
     catch (e) { setError(e.message); }
+  }
+  async function call(key) {
+    setError(""); setCalling(key);
+    try {
+      await api("/dialer/call", { method: "POST", body: { loan_id: loan.id, which: key } });
+      loadTimeline();
+    } catch (e) { setError(e.message); } finally { setTimeout(() => setCalling(""), 4000); }
   }
   async function reveal(key) {
     setError("");
@@ -84,6 +93,9 @@ export default function Account({ loan: first, onClose, onChanged }) {
               <div className="row">
                 <span>{shown[c.key] || c.mobile}</span>
                 {!shown[c.key] && <button className="ghost" onClick={() => reveal(c.key)}>Show number</button>}
+                {meta?.dialer_enabled && (
+                  <button disabled={!!calling} onClick={() => call(c.key)}>{calling === c.key ? "Calling…" : "Call"}</button>
+                )}
               </div>
             </li>
           ))}
@@ -93,7 +105,7 @@ export default function Account({ loan: first, onClose, onChanged }) {
       </section>
 
       <References loan={loan} onSaved={updated} />
-      {meta && <Outcome loan={loan} meta={meta} onSaved={updated} />}
+      {meta && <Outcome loan={loan} meta={meta} onSaved={updated} outcomePath={outcomePath} onDialer={onDialer} />}
       <Timeline items={timeline} />
       <Manual loan={loan} onSaved={updated} />
       {error && <p className="error" role="alert">{error}</p>}
@@ -170,7 +182,7 @@ function slots(meta) {
   return out;
 }
 
-function Outcome({ loan, meta, onSaved }) {
+function Outcome({ loan, meta, onSaved, outcomePath, onDialer }) {
   const [cbDate, setCbDate] = useState("");
   const [cbTime, setCbTime] = useState("");
   const [code, setCode] = useState("");
@@ -195,7 +207,8 @@ function Outcome({ loan, meta, onSaved }) {
     if (isPtp) { body.ptp_date = date; body.ptp_reason = reason; if (amount) body.ptp_amount = amount; }
     if (isCb) { body.callback_date = cbDate; body.callback_time = cbTime; }
     try {
-      onSaved(await api(`/loans/${loan.id}/disposition`, { method: "POST", body }));
+      const res = await api(outcomePath ? outcomePath(loan.id) : `/loans/${loan.id}/disposition`, { method: "POST", body });
+      if (res && res.loan) { onSaved(res.loan); onDialer?.(res); } else onSaved(res);
       setCode(""); setDate(""); setAmount(""); setReason(""); setNote(""); setCbDate(""); setCbTime("");
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }

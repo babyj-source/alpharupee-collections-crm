@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "accounts",
     "loans",
+    "dialer",
 ]
 # The Django admin is deliberately NOT installed: it signs in with a password only, which would
 # bypass the OTP step. Users are created with `manage.py create_crm_user`.
@@ -104,7 +105,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsSettled"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "dialer_login": "5/min"},
     "NUM_PROXIES": int(env("NUM_PROXIES", "1")),  # nginx. Use 2 when Cloudflare is switched on.
     "DEFAULT_PAGINATION_CLASS": "loans.pagination.Page",
     "PAGE_SIZE": 50,
@@ -118,6 +119,12 @@ OTP_MAX_ATTEMPTS = 5
 OTP_MAX_SENDS_PER_HOUR = 5
 # Prints the OTP to the server log instead of sending it. Never turn this on in production.
 OTP_DEV_MODE = env_bool("OTP_DEV_MODE", False)
+
+# ---- Smartflo (dialler). Everything stays OFF until SMARTFLO_ENABLED=true, so no customer can be called by accident.
+SMARTFLO_ENABLED = env_bool("SMARTFLO_ENABLED", False)
+SMARTFLO_API_TOKEN = env("SMARTFLO_API_TOKEN", "")  # long-lived account token; never sent to the browser
+SMARTFLO_API_BASE = env("SMARTFLO_API_BASE", "https://api-smartflo.tatateleservices.com")
+SMARTFLO_TIMEOUT_SECONDS = int(env("SMARTFLO_TIMEOUT_SECONDS", "10"))
 
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")

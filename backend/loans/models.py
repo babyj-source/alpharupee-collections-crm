@@ -146,6 +146,7 @@ class Activity(models.Model):
         ALLOCATION = "allocation", "Allocation"
         REFERENCE = "reference", "Reference contact"
         PTP = "ptp", "Promise to pay"
+        CALL = "call", "Call placed"
 
     loan = models.ForeignKey(Loan, on_delete=models.CASCADE, related_name="activities")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
@@ -157,6 +158,19 @@ class Activity(models.Model):
     class Meta:
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["loan", "-created_at"])]
+
+
+class CallAccess(models.Model):
+    """Lets an agent open and update one account they are on a dialler call with, even if it is allocated to someone else
+    (campaigns are shared pools). Short-lived; the normal allocation rules apply again once it expires."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    loan = models.ForeignKey(Loan, on_delete=models.CASCADE, related_name="+")
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "expires_at"])]
 
 
 class Ptp(models.Model):
