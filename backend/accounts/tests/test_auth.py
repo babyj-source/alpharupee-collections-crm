@@ -121,17 +121,33 @@ class Msg91Tests(TestCase):
         with self.assertRaises(otp.OtpDeliveryError):
             otp.send_sms("919876543210", "123456")
 
-    @override_settings(OTP_DEV_MODE=False, MSG91_AUTHKEY="k", MSG91_OTP_TEMPLATE_ID="t")
-    def test_success_and_failure_parsing(self):
-        ok = mock.Mock(status_code=200, json=lambda: {"type": "success"})
+    @override_settings(OTP_DEV_MODE=False, MSG91_AUTHKEY="k", MSG91_OTP_TEMPLATE_ID="tpl", MSG91_API="flow", MSG91_OTP_VARIABLE="OTP")
+    def test_flow_payload_and_parsing(self):
+        ok = mock.Mock(status_code=200, json=lambda: {"type": "success", "message": "req123"})
+        with mock.patch("accounts.otp.requests.post", return_value=ok) as post:
+            rid = otp.send_sms("919876543210", "123456")
+        kwargs = post.call_args.kwargs
+        self.assertEqual(rid, "req123")
+        self.assertTrue(kwargs["url"].endswith("/api/v5/flow"))
+        self.assertEqual(kwargs["headers"]["authkey"], "k")  # key travels in a header, not in the body
+        self.assertEqual(
+            kwargs["json"],
+            {"template_id": "tpl", "short_url": "0", "recipients": [{"mobiles": "919876543210", "OTP": "123456"}]},
+        )
+        bad = mock.Mock(status_code=200, json=lambda: {"type": "error", "message": "Template ID Missing or Invalid Template"})
+        with mock.patch("accounts.otp.requests.post", return_value=bad):
+            with self.assertRaises(otp.OtpDeliveryError) as ctx:
+                otp.send_sms("919876543210", "123456")
+        self.assertIn("Invalid Template", str(ctx.exception))
+        self.assertNotIn("123456", str(ctx.exception))
+
+    @override_settings(OTP_DEV_MODE=False, MSG91_AUTHKEY="k", MSG91_OTP_TEMPLATE_ID="tpl", MSG91_API="otp", MSG91_OTP_VARIABLE="OTP")
+    def test_otp_mode_payload(self):
+        ok = mock.Mock(status_code=200, json=lambda: {"type": "success", "message": "req9"})
         with mock.patch("accounts.otp.requests.post", return_value=ok) as post:
             otp.send_sms("919876543210", "123456")
         kwargs = post.call_args.kwargs
-        self.assertEqual(kwargs["headers"]["authkey"], "k")  # key travels in a header, not in the URL
+        self.assertTrue(kwargs["url"].endswith("/api/v5/otp"))
         self.assertNotIn("authkey", kwargs["params"])
-        self.assertEqual(kwargs["json"], {"number": "123456"})  # template OTP-1 uses ##number##
         self.assertEqual(kwargs["params"]["otp"], "123456")
-        bad = mock.Mock(status_code=200, json=lambda: {"type": "error"})
-        with mock.patch("accounts.otp.requests.post", return_value=bad):
-            with self.assertRaises(otp.OtpDeliveryError):
-                otp.send_sms("919876543210", "123456")
+        self.assertEqual(kwargs["json"], {"OTP": "123456"})

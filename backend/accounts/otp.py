@@ -28,33 +28,45 @@ def _hash(user_id, code):
 
 
 def send_sms(mobile, code):
-    """Deliver the code. Patched out in tests."""
+    """Deliver the code and return MSG91's request id (empty in dev mode). Patched out in tests."""
     if settings.OTP_DEV_MODE:
         log.warning("OTP_DEV_MODE: code for %s is %s", mobile[-4:], code)
-        return
+        return ""
     if not settings.MSG91_AUTHKEY or not settings.MSG91_OTP_TEMPLATE_ID:
         raise OtpDeliveryError("MSG91 is not configured")
-    try:
-        resp = requests.post(
-            settings.MSG91_OTP_URL,
+    headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json", "Accept": "application/json"}
+    var = settings.MSG91_OTP_VARIABLE or "OTP"
+    if settings.MSG91_API == "otp":
+        request_kwargs = dict(
+            url=settings.MSG91_OTP_URL,
             params={"template_id": settings.MSG91_OTP_TEMPLATE_ID, "mobile": mobile, "otp": code},
-            headers={"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json"},
-            json={settings.MSG91_OTP_VARIABLE: code},
-            timeout=10,
+            json={var: code},
         )
+    else:
+        request_kwargs = dict(
+            url=settings.MSG91_FLOW_URL,
+            json={
+                "template_id": settings.MSG91_OTP_TEMPLATE_ID,
+                "short_url": "0",
+                "recipients": [{"mobiles": mobile, var: code}],
+            },
+        )
+    try:
+        resp = requests.post(headers=headers, timeout=10, **request_kwargs)
     except requests.RequestException as exc:
         raise OtpDeliveryError("MSG91 request failed") from exc
-    ok, reason = resp.status_code == 200, ""
+    ok, message = resp.status_code == 200, ""
     try:
         body = resp.json()
         ok = ok and body.get("type") == "success"
-        reason = str(body.get("message", ""))[:120]
+        message = str(body.get("message", ""))[:120]
     except ValueError:
         ok = False
     if not ok:
         # Only MSG91's own short reason is logged (for example an unapproved template or a blocked IP), never the number or code.
-        log.error("MSG91 refused the OTP (HTTP %s): %s", resp.status_code, reason or "no message")
-        raise OtpDeliveryError("MSG91 refused the request")
+        log.error("MSG91 refused the OTP (HTTP %s): %s", resp.status_code, message or "no message")
+        raise OtpDeliveryError(f"MSG91 refused (HTTP {resp.status_code}): {message or 'no message'}")
+    return message  # on success MSG91 puts its request id here; it is not personal data
 
 
 def issue(user):
@@ -64,13 +76,14 @@ def issue(user):
     if recent >= settings.OTP_MAX_SENDS_PER_HOUR:
         raise OtpRateLimited()
     code = f"{secrets.randbelow(1_000_000):06d}"
-    send_sms(user.mobile, code)  # raise before storing so a failed send costs no quota
+    request_id = send_sms(user.mobile, code) or ""  # raise before storing so a failed send costs no quota
     OtpChallenge.objects.filter(user=user, used=False).update(used=True)
     OtpChallenge.objects.create(
         user=user,
         code_hash=_hash(user.pk, code),
         expires_at=now + timedelta(seconds=settings.OTP_TTL_SECONDS),
     )
+    return request_id
 
 
 def verify(user, code):

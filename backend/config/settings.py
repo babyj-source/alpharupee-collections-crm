@@ -122,9 +122,13 @@ OTP_DEV_MODE = env_bool("OTP_DEV_MODE", False)
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")
 MSG91_OTP_TEMPLATE_ID = env("MSG91_OTP_TEMPLATE_ID", "")
+# "flow" = SMS Flow API (templates made under SMS > Templates, with named variables such as ##OTP##).
+# "otp"  = the separate Send OTP API (templates made in MSG91's OTP section).
+MSG91_API = env("MSG91_API", "flow")
+MSG91_FLOW_URL = env("MSG91_FLOW_URL", "https://control.msg91.com/api/v5/flow")
 MSG91_OTP_URL = env("MSG91_OTP_URL", "https://control.msg91.com/api/v5/otp")
-# Name of the code variable in the approved template (##number## in template OTP-1).
-MSG91_OTP_VARIABLE = env("MSG91_OTP_VARIABLE", "number")
+# Name of the code variable in the approved template (##OTP## in template OTP-1 v1.0).
+MSG91_OTP_VARIABLE = env("MSG91_OTP_VARIABLE", "OTP")
 
 # ---- LMS (read-only MySQL)
 LMS_DB = {
