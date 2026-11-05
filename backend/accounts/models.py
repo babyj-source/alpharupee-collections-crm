@@ -4,8 +4,8 @@ from django.utils import timezone
 
 
 class Role(models.TextChoices):
-    HEAD = "head", "Collections head"
-    AGENT = "agent", "Collections agent"
+    HEAD = "head", "Head"
+    AGENT = "agent", "Agent"
 
 
 class UserManager(BaseUserManager):

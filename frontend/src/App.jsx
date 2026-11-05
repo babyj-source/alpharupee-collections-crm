@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import Login from "./Login.jsx";
 import Dashboard from "./Dashboard.jsx";
 import Loans from "./Loans.jsx";
+import Logo from "./Logo.jsx";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking
@@ -30,7 +31,8 @@ export default function App() {
   return (
     <div className="shell">
       <header className="bar">
-        <strong>AlphaRupee Collections</strong>
+        <Logo height={30} />
+        <strong className="product">CRM</strong>
         <nav>
           <button className={tab === "dashboard" ? "tab on" : "tab"} onClick={() => setTab("dashboard")}>
             {isHead ? "Dashboard" : "My summary"}
@@ -41,7 +43,7 @@ export default function App() {
         </nav>
         <span className="grow" />
         <span className="muted small">
-          {user.name} · {isHead ? "Collections head" : "Agent"}
+          {user.name} · {isHead ? "Head" : "Agent"}
         </span>
         <button className="ghost" onClick={logout}>
           Sign out

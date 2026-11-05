@@ -1,3 +1,4 @@
+import Logo from "./Logo.jsx";
 import { useState } from "react";
 import { api } from "./api.js";
 
@@ -50,7 +51,8 @@ export default function Login({ onDone }) {
   return (
     <div className="center">
       <div className="card login">
-        <h1>AlphaRupee Collections</h1>
+        <div className="brand"><Logo height={40} /></div>
+        <h1>CRM</h1>
         {step === "password" ? (
           <form onSubmit={submitPassword}>
             <label>
