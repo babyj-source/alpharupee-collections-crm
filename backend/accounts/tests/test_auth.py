@@ -1,7 +1,9 @@
+from datetime import timedelta
 from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts import otp
@@ -151,3 +153,123 @@ class Msg91Tests(TestCase):
         self.assertNotIn("authkey", kwargs["params"])
         self.assertEqual(kwargs["params"]["otp"], "123456")
         self.assertEqual(kwargs["json"], {"OTP": "123456"})
+
+
+class ForgotPasswordTests(TestCase):
+    NEW = "Brand-new-pass-77"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("head@example.com", PW, name="Head", mobile="919876543210", role="head")
+        self.c = APIClient()
+        self.sent = []
+        patcher = mock.patch.object(otp, "send_sms", side_effect=lambda m, code: self.sent.append((m, code)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def forgot(self, email="head@example.com", client=None):
+        return (client or self.c).post("/api/auth/forgot", {"email": email}, format="json")
+
+    def reset(self, code, password=None, client=None):
+        return (client or self.c).post("/api/auth/reset", {"code": code, "new_password": password or self.NEW}, format="json")
+
+    def login_ok(self, password):
+        c = APIClient()
+        r = c.post("/api/auth/login", {"email": "head@example.com", "password": password}, format="json")
+        if r.status_code != 200:
+            return False
+        return c.post("/api/auth/verify", {"code": self.sent[-1][1]}, format="json").status_code == 200
+
+    def test_reset_with_the_sms_code_then_sign_in_with_the_new_password(self):
+        r = self.forgot()
+        self.assertEqual(r.json(), {"sent": True, "expires_in": 600})
+        self.assertEqual(self.sent[-1][0], "919876543210")            # goes to the registered mobile, not to anything the caller typed
+        r = self.reset(self.sent[-1][1])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.c.get("/api/auth/me").status_code, 403)   # resetting does not sign anyone in
+        self.assertFalse(self.login_ok(PW))                             # the old password is dead
+        cache.clear()
+        self.assertTrue(self.login_ok(self.NEW))                        # new password + a fresh code works
+        self.assertTrue(AuditLog.objects.filter(action="password_reset", user=self.user).exists())
+
+    def test_unknown_inactive_and_real_e_mails_get_the_same_answer(self):
+        User.objects.create_user("gone@example.com", PW, name="Gone", mobile="919800000001", role="agent", is_active=False)
+        answers = [self.forgot(e) for e in ("head@example.com", "nobody@example.com", "gone@example.com")]
+        self.assertEqual({a.status_code for a in answers}, {200})
+        self.assertEqual(len({str(a.json()) for a in answers}), 1)
+        self.assertEqual(len(self.sent), 1)                              # only the real user got an SMS
+        # and the code step cannot tell them apart either
+        self.forgot("nobody@example.com")
+        self.assertEqual(self.reset("123456").json(), {"detail": "Wrong or expired code."})
+
+    def test_wrong_code_is_refused_and_five_wrong_guesses_burn_the_code(self):
+        self.forgot()
+        good = self.sent[-1][1]
+        for _ in range(5):
+            self.assertEqual(self.reset("000000" if good != "000000" else "111111").status_code, 400)
+            cache.clear()
+        self.assertEqual(self.reset(good).status_code, 400)             # burned even though this one is right
+        self.assertTrue(self.login_ok(PW))
+
+    def test_code_works_once_and_expires(self):
+        self.forgot()
+        code = self.sent[-1][1]
+        self.assertEqual(self.reset(code).status_code, 200)
+        self.assertEqual(self.reset(code).status_code, 400)             # the session was cleared and the code used
+        self.forgot()
+        OtpChallenge.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.reset(self.sent[-1][1]).status_code, 400)
+
+    def test_weak_password_is_rejected_without_using_up_the_code(self):
+        self.forgot()
+        code = self.sent[-1][1]
+        r = self.reset(code, password="short")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("at least 10", r.json()["detail"])
+        self.assertEqual(self.reset(code).status_code, 200)             # same code still good
+
+    def test_needs_the_e_mail_step_first_and_it_times_out(self):
+        self.assertEqual(self.reset("123456").status_code, 400)          # no session
+        self.forgot()
+        s = self.c.session
+        s["reset_at"] = timezone.now().timestamp() - 16 * 60
+        s.save()
+        self.assertEqual(self.reset(self.sent[-1][1]).status_code, 400)
+
+    def test_clears_a_lockout_and_the_forced_change_and_ends_open_sessions(self):
+        User.objects.filter(pk=self.user.pk).update(failed_logins=3, locked_until=timezone.now() + timedelta(minutes=10), must_change_password=True)
+        other = APIClient()
+        other.force_login(User.objects.get(pk=self.user.pk))
+        self.assertEqual(other.get("/api/auth/me").status_code, 200)
+        self.forgot()
+        self.assertEqual(self.reset(self.sent[-1][1]).status_code, 200)
+        u = User.objects.get(pk=self.user.pk)
+        self.assertEqual((u.failed_logins, u.locked_until, u.must_change_password), (0, None, False))
+        self.assertEqual(other.get("/api/auth/me").status_code, 403)    # a session opened with the old password is gone
+        cache.clear()
+        self.assertTrue(self.login_ok(self.NEW))
+
+    def test_sms_trouble_does_not_reveal_anything_and_is_recorded(self):
+        with mock.patch.object(otp, "send_sms", side_effect=otp.OtpDeliveryError("MSG91 refused (HTTP 401): no auth")):
+            r = self.forgot()
+        self.assertEqual(r.json(), {"sent": True, "expires_in": 600})
+        self.assertTrue(AuditLog.objects.filter(action="otp_send_failed").exists())
+        for _ in range(5):
+            self.forgot()
+            cache.clear()
+        self.forgot()                                                     # over the hourly limit: same answer, no more SMS
+        self.assertEqual(len(self.sent), 5)
+        self.assertTrue(AuditLog.objects.filter(action="reset_blocked").exists())
+
+    def test_nothing_secret_in_the_audit_log(self):
+        self.forgot()
+        code = self.sent[-1][1]
+        self.reset(code)
+        dump = str(list(AuditLog.objects.values()))
+        for secret in (code, self.NEW, "919876543210"):
+            self.assertNotIn(secret, dump)
+
+    def test_throttled(self):
+        for _ in range(10):
+            self.forgot("x@example.com")
+        self.assertEqual(self.forgot("x@example.com").status_code, 429)

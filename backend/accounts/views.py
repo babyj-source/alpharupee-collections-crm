@@ -3,6 +3,8 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import status
@@ -16,6 +18,9 @@ from .models import User, audit
 
 PENDING_KEY = "pending_user_id"
 PENDING_AT = "pending_at"
+RESET_EMAIL = "reset_email"
+RESET_AT = "reset_at"
+RESET_WINDOW = 15 * 60
 _DUMMY_HASH = None
 
 
@@ -137,6 +142,77 @@ class ResendView(APIView):
         if user is None:
             return Response({"detail": "Sign in again."}, status=status.HTTP_400_BAD_REQUEST)
         return _start_otp(request, user)
+
+
+class ForgotView(APIView):
+    """Forgot password, step 1: send a code by SMS to the mobile number registered for this e-mail.
+    The answer is the same whether or not the e-mail is registered, so this cannot be used to find out who has an account."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()[:254]
+        if not email:
+            return Response({"detail": "Enter your e-mail address."}, status=status.HTTP_400_BAD_REQUEST)
+        reply = Response({"sent": True, "expires_in": settings.OTP_TTL_SECONDS})
+        request.session.flush()
+        request.session[RESET_EMAIL] = email
+        request.session[RESET_AT] = timezone.now().timestamp()
+        user = User.objects.filter(email=email).first()
+        if user is None or not user.is_active or not user.mobile:
+            _burn_time()
+            audit(request, "reset_requested", email_tried=email, detail="unknown, inactive or no mobile")
+            return reply
+        try:
+            request_id = otp.issue(user)
+        except otp.OtpRateLimited:
+            audit(request, "reset_blocked", user=user, detail="too many codes")
+        except otp.OtpDeliveryError as exc:
+            audit(request, "otp_send_failed", user=user, detail=str(exc))
+        else:
+            audit(request, "reset_requested", user=user, detail=f"msg91 request {request_id}" if request_id else "")
+        return reply
+
+
+class ResetView(APIView):
+    """Forgot password, step 2: the SMS code and the new password. This does not sign the user in: they sign in
+    afterwards with the new password and a fresh code, so the second factor is never skipped."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "otp"
+
+    def post(self, request):
+        email = request.session.get(RESET_EMAIL)
+        at = request.session.get(RESET_AT)
+        if not email or not at or timezone.now().timestamp() - at > RESET_WINDOW:
+            return Response({"detail": "Start again: enter your e-mail address to get a new code."}, status=status.HTTP_400_BAD_REQUEST)
+        code = str(request.data.get("code") or "").strip()
+        new = request.data.get("new_password") or ""
+        user = User.objects.filter(email=email, is_active=True).first()
+        try:
+            validate_password(new, user)  # checked first so a weak password does not use up the code
+        except DjangoValidationError as exc:
+            return Response({"detail": " ".join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+        wrong = Response({"detail": "Wrong or expired code."}, status=status.HTTP_400_BAD_REQUEST)
+        if user is None:
+            _burn_time()
+            return wrong
+        if not otp.verify(user, code):
+            audit(request, "reset_code_failed", user=user)
+            return wrong
+        user.set_password(new)  # changing the hash also ends every session this user has open
+        user.must_change_password = False
+        user.failed_logins = 0
+        user.locked_until = None
+        user.save(update_fields=["password", "must_change_password", "failed_logins", "locked_until"])
+        request.session.flush()
+        audit(request, "password_reset", user=user)
+        return Response({"ok": True})
 
 
 class LogoutView(APIView):
