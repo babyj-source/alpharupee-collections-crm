@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from accounts.models import AuditLog
 from dialer import views
-from dialer.models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap
+from dialer.models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap, PushedLead
 from dialer.pools import lead_rows, pool_loans
 from dialer.smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, last10, parse_live_calls
 from loans.models import Activity, CallAccess, Loan, Ptp
@@ -121,42 +121,196 @@ class PoolTests(DialerBase):
         self.assertNotIn("L1", str(r))  # counts only, no customers
 
 
-class PushTests(DialerBase):
-    def test_preview_changes_nothing_and_push_is_head_only(self):
-        r = self.post(self.head, "pools/dpd1_7/push", {}).json()
-        self.assertEqual((r["preview"], r["eligible"], r["sample"][0]["account_id"]), (True, 1, "L1"))
-        self.assertEqual(self.fake.calls, [])
-        self.assertEqual(self.post(self.a1, "pools/dpd1_7/push", {"confirm": True}).status_code, 403)
+class StartPushTests(DialerBase):
+    """Starting a campaign sends that agent's own customers to Smartflo. There is no manual push any more."""
 
-    def test_push_sends_rows_and_records_it(self):
-        r = self.post(self.head, "pools/dpd1_7/push", {"confirm": True})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.fake.calls[0][:2], ("bulk_add_leads", "222"))
-        self.assertEqual(self.fake.calls[0][2], [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}])
+    def test_no_manual_push_endpoint(self):
+        self.assertEqual(self.post(self.head, "pools/dpd1_7/push", {"confirm": True}).status_code, 404)
+
+    def test_start_pushes_only_this_agents_customers(self):
+        Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a2)   # also in dpd1_7, but Agent Two's
+        r = self.start()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["push"], {"sent": 1, "total": 1, "error": ""})
+        push = [c for c in self.fake.calls if c[0] == "bulk_add_leads"]
+        self.assertEqual(len(push), 1)
+        self.assertEqual(push[0][1:], ("222", [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}]))
+        self.assertEqual(self.fake.names().index("session_call") < self.fake.names().index("bulk_add_leads"), True)  # session first, then leads
+        self.assertTrue(CampaignPush.objects.filter(ok=True, leads=1, by=self.a1).exists())
         self.assertEqual(Campaign.objects.get(key="dpd1_7").last_pushed_count, 1)
-        self.assertTrue(CampaignPush.objects.filter(ok=True, leads=1).exists())
-        a = AuditLog.objects.get(action="campaign_pushed")
-        self.assertNotIn("9111111111", a.detail)
+        self.assertNotIn("9111111111", AuditLog.objects.get(action="campaign_pushed").detail)
 
-    def test_push_needs_configuration_and_switch(self):
-        self.assertEqual(self.post(self.head, "pools/dpd16/push", {"confirm": True}).status_code, 400)  # no ids yet
-        with override_settings(SMARTFLO_ENABLED=False):
-            self.assertEqual(self.post(self.head, "pools/dpd1_7/push", {"confirm": True}).status_code, 400)
-        self.assertEqual(self.post(self.head, "pools/nope/push", {}).status_code, 404)
-        self.assertEqual(self.fake.calls, [])
+    def test_nobody_twice_in_a_day_and_new_allocations_follow(self):
+        self.start()
+        self.fake.calls.clear()
+        r = self.post(self.a1, "session/push")
+        self.assertEqual((r.status_code, r.json()["sent"], r.json()["total"]), (200, 0, 0))
+        self.assertNotIn("bulk_add_leads", self.fake.names())
+        self.start()                                                           # starting again the same day: still not re-sent
+        self.assertNotIn("bulk_add_leads", self.fake.names())
+        Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)  # a new customer is allocated to Asha
+        self.assertEqual(self.post(self.a1, "session/push").json()["sent"], 1)
+        self.assertEqual(PushedLead.objects.count(), 2)
+
+    def test_agent_with_no_customers_still_starts(self):
+        r = self.start(self.a2)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["push"], {"sent": 0, "total": 0, "error": ""})
+        self.assertNotIn("bulk_add_leads", self.fake.names())
+
+    def test_push_error_keeps_the_session_and_can_be_retried(self):
+        self.fake.fail = {"bulk_add_leads": SmartfloError("Smartflo refused the request (500).")}
+        r = self.start()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((r.json()["push"]["sent"], "refused" in r.json()["push"]["error"]), (0, True))
+        self.assertEqual(DialerSession.objects.filter(ended_at__isnull=True).count(), 1)
+        self.assertTrue(CampaignPush.objects.filter(ok=False).exists())
+        self.assertEqual(PushedLead.objects.count(), 0)
+        self.fake.fail = {}
+        self.assertEqual(self.post(self.a1, "session/push").json()["sent"], 1)
 
     def test_chunks_and_partial_failure(self):
-        Campaign.objects.filter(key="dpd16").update(smartflo_campaign_id="1", smartflo_list_id="2")
-        self.fake.fail = {}
+        Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)
         with mock.patch.object(views, "CHUNK", 1):
-            Loan.objects.filter(pk=self.l1.pk).update(dpd=40)  # now two accounts in dpd16
-            self.assertEqual(self.post(self.head, "pools/dpd16/push", {"confirm": True}).json()["sent"], 2)
+            self.fake.fail = {}
+            self.assertEqual(self.start().json()["push"]["sent"], 2)
             self.assertEqual(self.fake.names().count("bulk_add_leads"), 2)
-            self.fake.calls.clear()
-            self.fake.fail = {"bulk_add_leads": SmartfloError("Smartflo refused the request (500).")}
-            r = self.post(self.head, "pools/dpd16/push", {"confirm": True})
-            self.assertEqual((r.status_code, r.json()["sent"]), (502, 0))
-            self.assertTrue(CampaignPush.objects.filter(ok=False, leads=0).exists())
+        PushedLead.objects.all().delete()
+        self.fake.calls.clear()
+        orig = self.fake.bulk_add_leads
+        state = {"n": 0}
+        def flaky(list_id, rows):
+            state["n"] += 1
+            if state["n"] == 2:
+                raise SmartfloError("Smartflo refused the request (500).")
+            return orig(list_id, rows)
+        self.fake.bulk_add_leads = flaky
+        with mock.patch.object(views, "CHUNK", 1):
+            r = self.post(self.a1, "session/push").json()
+        self.assertEqual((r["sent"], r["total"], bool(r["error"])), (1, 2, True))
+        self.assertEqual(PushedLead.objects.count(), 1)       # only what really went is remembered
+
+    def test_push_needs_a_session_and_the_switch(self):
+        self.assertEqual(self.post(self.a1, "session/push").status_code, 400)
+        self.start()
+        with override_settings(SMARTFLO_ENABLED=False):
+            self.assertEqual(self.post(self.a1, "session/push").status_code, 400)
+
+
+class CampaignTests(DialerBase):
+    RULES = {"dpd_min": 3, "dpd_max": 10, "min_overdue": 50, "product_code": "", "hold_promises": True, "hold_callbacks": True}
+
+    def create(self, user=None, **body):
+        body.setdefault("label", "Early stage")
+        body.setdefault("rules", self.RULES)
+        return self.post(user or self.head, "campaigns", body)
+
+    def test_head_creates_a_campaign_by_rules(self):
+        r = self.create(smartflo_campaign_id="901", smartflo_list_id="902", active=True)
+        self.assertEqual(r.status_code, 201, r.content)
+        d = r.json()
+        self.assertEqual((d["key"], d["custom"], d["active"], d["eligible"]), ("c_early_stage", True, True, 1))   # L1 is 5 DPD
+        self.assertIn("DPD 3 to 10", d["summary"])
+        self.assertTrue(AuditLog.objects.filter(action="campaign_created").exists())
+        self.assertEqual(self.start(campaign="c_early_stage").status_code, 200)       # agents can start it straight away
+        self.assertEqual(self.fake.calls[-1][1], "902")                                 # leads go to the new list
+
+    def test_rules_decide_who_is_in(self):
+        self.create(label="Big ones", rules={**self.RULES, "dpd_min": 0, "dpd_max": "", "min_overdue": 300})
+        by = {p["key"]: p for p in self.api(self.head).get("/api/dialer/pools").json()["pools"]}
+        self.assertEqual(by["c_big_ones"]["eligible"], 1)           # only L2 (420 overdue)
+        self.assertEqual(by["c_big_ones"]["rules"]["dpd_max"], None)
+        Ptp.objects.create(loan=self.l2, agent=self.a2, promised_date=self.day(3), amount=100, reason="forgot")
+        by = {p["key"]: p for p in self.api(self.head).get("/api/dialer/pools").json()["pools"]}
+        self.assertEqual(by["c_big_ones"]["eligible"], 0)           # promise to come: held back
+        self.create(label="With promises", rules={**self.RULES, "dpd_min": 0, "dpd_max": "", "min_overdue": 300, "hold_promises": False})
+        by = {p["key"]: p for p in self.api(self.head).get("/api/dialer/pools").json()["pools"]}
+        self.assertEqual(by["c_with_promises"]["eligible"], 1)
+
+    def test_validation_and_permissions(self):
+        self.assertEqual(self.create(self.a1).status_code, 403)
+        self.assertEqual(self.create(label="  ").status_code, 400)
+        self.assertEqual(self.create(rules={"dpd_min": 10, "dpd_max": 3}).status_code, 400)
+        self.assertEqual(self.create(rules={"dpd_min": "x"}).status_code, 400)
+        self.assertEqual(self.create(active=True).status_code, 400)                    # cannot switch on without ids
+        self.assertEqual(self.create().status_code, 201)
+        self.assertEqual(self.create().status_code, 400)                               # same name twice
+        self.assertEqual(self.create(label="Early Stage 2").json()["key"], "c_early_stage_2")
+
+    def test_edit_pause_and_delete(self):
+        self.create(smartflo_campaign_id="901", smartflo_list_id="902", active=True)
+        put = lambda user, key, body: self.api(user).put(f"/api/dialer/campaigns/{key}", body, format="json")
+        r = put(self.head, "c_early_stage", {"label": "Early DPD", "rules": {**self.RULES, "dpd_min": 6}, "active": False})
+        self.assertEqual((r.status_code, r.json()["label"], r.json()["active"], r.json()["eligible"]), (200, "Early DPD", False, 0))
+        self.assertEqual(self.start(campaign="c_early_stage").status_code, 400)       # paused: agents cannot start it
+        self.assertEqual(put(self.a1, "c_early_stage", {"active": True}).status_code, 403)
+        # a built-in campaign keeps its name and rules but its ids and switch can be changed by the head
+        r = put(self.head, "dpd0", {"label": "Renamed", "rules": {"dpd_min": 50}, "smartflo_campaign_id": "5", "smartflo_list_id": "6", "active": True})
+        c = Campaign.objects.get(key="dpd0")
+        self.assertEqual((r.status_code, c.label, c.rules, c.active), (200, "0 DPD", {}, True))
+        dele = lambda user, key: self.api(user).delete(f"/api/dialer/campaigns/{key}")
+        self.assertEqual(dele(self.head, "dpd0").status_code, 400)                     # built-ins stay
+        self.assertEqual(dele(self.a1, "c_early_stage").status_code, 403)
+        self.assertEqual(dele(self.head, "c_early_stage").status_code, 204)
+        self.assertFalse(Campaign.objects.filter(key="c_early_stage").exists())
+
+    def test_cannot_delete_a_campaign_agents_have_used(self):
+        self.create(smartflo_campaign_id="901", smartflo_list_id="902", active=True)
+        self.start(campaign="c_early_stage")
+        self.assertEqual(self.api(self.head).delete("/api/dialer/campaigns/c_early_stage").status_code, 400)
+        self.assertTrue(Campaign.objects.filter(key="c_early_stage").exists())
+
+    def test_agents_see_their_own_counts_not_the_heads_details(self):
+        self.create(smartflo_campaign_id="901", smartflo_list_id="902", active=True)
+        a = {p["key"]: p for p in self.api(self.a1).get("/api/dialer/pools").json()["pools"]}
+        self.assertEqual((a["dpd1_7"]["mine"], a["dpd16"]["mine"]), (1, 0))             # L2 belongs to Agent Two
+        self.assertNotIn("smartflo_list_id", a["c_early_stage"])
+        h = {p["key"]: p for p in self.api(self.head).get("/api/dialer/pools").json()["pools"]}
+        self.assertEqual(h["c_early_stage"]["smartflo_list_id"], "902")
+        self.assertNotIn("mine", h["dpd1_7"])
+
+
+class LiveTests(DialerBase):
+    def get(self, user=None):
+        return self.api(user or self.head).get("/api/dialer/live")
+
+    def test_head_only(self):
+        self.assertEqual(self.get(self.a1).status_code, 403)
+        self.assertEqual(self.api().get("/api/dialer/live").status_code, 403)
+        self.assertEqual(self.get(self.admin).status_code, 200)
+
+    def test_campaign_numbers_agents_and_feed(self):
+        self.start()                                                  # Asha starts: L1 pushed
+        self.live(); self.api(self.a1).get("/api/dialer/session")   # she is on a call with L1
+        r = self.get().json()
+        c = {x["key"]: x for x in r["campaigns"]}["dpd1_7"]
+        self.assertEqual((c["waiting"], c["pushed_today"], c["called"], c["connected"]), (1, 1, 0, 0))
+        ag = r["agents"][0]
+        self.assertEqual((ag["name"], ag["campaign"], ag["state"], ag["account_id"]), ("Agent One", "1-7 DPD", "on_call", "L1"))
+        # she logs a connected outcome
+        self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "ptp_given", "ptp_date": str(self.day(2)), "ptp_reason": "forgot"})
+        r = self.get().json()
+        c = {x["key"]: x for x in r["campaigns"]}["dpd1_7"]
+        self.assertEqual((c["called"], c["connected"], c["promises"], c["paid"]), (1, 1, 1, 0))
+        self.assertEqual((r["feed"][0]["agent"], r["feed"][0]["account_id"], r["feed"][0]["outcome"], r["feed"][0]["connected"]),
+                         ("Agent One", "L1", "Connected · PTP given", True))
+        self.assertEqual(r["agents"][0]["outcomes_today"], 1)
+        self.assertNotIn("9111111111", str(r))                         # no phone numbers
+
+    def test_agent_states(self):
+        self.start()
+        self.assertEqual(self.get().json()["agents"][0]["state"], "idle")            # never checked in
+        self.api(self.a1).get("/api/dialer/session")
+        self.assertEqual(self.get().json()["agents"][0]["state"], "waiting")
+        DialerSession.objects.update(last_seen_at=timezone.now() - timedelta(minutes=2), on_call=True)
+        self.assertEqual(self.get().json()["agents"][0]["state"], "idle")            # screen closed mid-call
+        self.post(self.a1, "session/stop")
+        self.assertEqual(self.get().json()["agents"], [])
+
+    def test_nothing_pushed_means_zeros(self):
+        r = self.get().json()
+        self.assertTrue(all(c["pushed_today"] == 0 and c["called"] == 0 for c in r["campaigns"]))
+        self.assertEqual((r["agents"], r["feed"]), ([], []))
 
 
 class SetupTests(DialerBase):
@@ -164,7 +318,7 @@ class SetupTests(DialerBase):
         for u in (self.head, self.a1):
             self.assertEqual(self.api(u).get("/api/dialer/setup").status_code, 403)
         r = self.api(self.admin).get("/api/dialer/setup").json()
-        self.assertEqual((r["status"], len(r["campaigns"]), len(r["dispositions"])), ({"enabled": True, "token_set": True}, 6, 11))
+        self.assertEqual((r["status"], len(r["dispositions"])), ({"enabled": True, "token_set": True}, 11))
         self.assertNotIn("acct-token", str(r))
         self.assertEqual({a["name"] for a in r["agents"]}, {"Agent One", "Agent Two"})
 
@@ -200,7 +354,7 @@ class SessionTests(DialerBase):
     def test_start_flow_and_secrets(self):
         r = self.start()
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(self.fake.names(), ["agent_login", "session_create", "session_call"])
+        self.assertEqual(self.fake.names(), ["agent_login", "session_create", "session_call", "bulk_add_leads"])
         self.assertEqual(self.fake.calls[0][1], "asha@smartflo.test")
         self.assertEqual(self.fake.calls[1][1:], ("agent-token", "111"))
         s = DialerSession.objects.get()

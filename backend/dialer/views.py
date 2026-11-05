@@ -1,12 +1,14 @@
 import base64
 import hashlib
-from datetime import timedelta
+from collections import defaultdict
+from datetime import datetime, time, timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import Count, ProtectedError, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.text import slugify
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -18,10 +20,10 @@ from loans.models import ACTIVE_Q, Activity, CallAccess, Loan
 from loans.phones import normalise_mobile
 from loans.serializers import LoanSerializer
 from loans.views import DispositionView, scoped
-from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, DISPOSITION_LABELS, DISPOSITIONS
+from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITION_LABELS, DISPOSITIONS
 
-from .models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap
-from .pools import POOL_KEYS, lead_rows, pool_loans
+from .models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap, PushedLead
+from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
 from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, last10, parse_live_calls
 
 TOKEN_MINUTES = 55  # Smartflo agent tokens last one hour
@@ -66,59 +68,93 @@ def _digits_field(max_len=12):
                                   error_messages={"invalid": "Digits only."})
 
 
-# ------------------------------------------------------------------ pools and pushing leads
+# ------------------------------------------------------------------ campaigns
+def _campaign_row(c, user):
+    row = {"key": c.key, "label": c.label, "custom": c.custom, "eligible": len(lead_rows(campaign_loans(c))), "configured": c.configured,
+           "active": c.active, "last_pushed_at": c.last_pushed_at, "last_pushed_count": c.last_pushed_count}
+    if user.is_head:
+        row.update({"smartflo_campaign_id": c.smartflo_campaign_id, "smartflo_list_id": c.smartflo_list_id,
+                    "rules": {**RULE_DEFAULTS, **(c.rules or {})} if c.custom else None, "summary": rules_summary(c)})
+    else:
+        row["mine"] = len(lead_rows(campaign_loans(c).filter(assigned_agent=user)))
+    return row
+
+
 class PoolListView(APIView):
-    """Counts for every campaign pool. Customers are not listed here, only how many."""
+    """Every campaign with how many customers are in it. Customers are not listed here, only how many.
+    Agents also get how many of those are allocated to them (that is what gets pushed when they start)."""
 
     def get(self, request):
-        camps = {c.key: c for c in Campaign.objects.all()}
-        out = []
-        for key in POOL_KEYS:
-            c = camps.get(key)
-            if c is None:
-                continue
-            out.append({"key": key, "label": c.label, "eligible": len(lead_rows(pool_loans(key))), "configured": c.configured,
-                        "active": c.active, "last_pushed_at": c.last_pushed_at, "last_pushed_count": c.last_pushed_count})
-        return Response({"enabled": enabled(), "in_window": in_window(), "pools": out})
+        return Response({"enabled": enabled(), "in_window": in_window(),
+                         "pools": [_campaign_row(c, request.user) for c in Campaign.objects.all()]})
 
 
-class PoolPushView(APIView):
-    """Preview, then (with confirm) push the pool's customers into the Smartflo lead list. Head or Admin."""
+def push_for_agent(camp, user, client):
+    """Send this agent's own customers in the campaign to its Smartflo lead list, skipping anyone already sent today.
+    Returns (sent, total, error). Stops at the first Smartflo error; what was sent stays recorded."""
+    today = timezone.localdate()
+    done = PushedLead.objects.filter(campaign=camp, pushed_on=today).values("loan_id")
+    pairs = lead_pairs(campaign_loans(camp).filter(assigned_agent=user).exclude(pk__in=done))
+    sent, error = 0, ""
+    try:
+        for i in range(0, len(pairs), CHUNK):
+            chunk = pairs[i:i + CHUNK]
+            client.bulk_add_leads(camp.smartflo_list_id, [row for _pk, row in chunk])
+            PushedLead.objects.bulk_create([PushedLead(campaign=camp, loan_id=pk, pushed_on=today, user=user) for pk, _row in chunk],
+                                           ignore_conflicts=True)
+            sent += len(chunk)
+    except SmartfloError as exc:
+        error = str(exc)[:200]
+    if pairs:
+        CampaignPush.objects.create(campaign=camp, by=user, leads=sent, ok=not error, error=error)
+    if sent:
+        camp.last_pushed_at, camp.last_pushed_count = timezone.now(), sent
+        camp.save(update_fields=["last_pushed_at", "last_pushed_count"])
+    return sent, len(pairs), error
+
+
+class CampaignWriteSerializer(serializers.Serializer):
+    label = serializers.CharField(max_length=60, required=False)
+    rules = serializers.DictField(required=False)
+    smartflo_campaign_id = _digits_field()
+    smartflo_list_id = _digits_field()
+    active = serializers.BooleanField(required=False)
+
+
+def _unique_key(label):
+    base = "c_" + (slugify(label).replace("-", "_")[:24] or "campaign")
+    key, n = base, 2
+    while Campaign.objects.filter(key=key).exists():
+        key, n = f"{base}_{n}", n + 1
+    return key
+
+
+class CampaignCreateView(APIView):
+    """Head or Admin: add a campaign that picks its customers by rules (days past due, overdue amount, product)."""
 
     permission_classes = [IsHead]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "bulk"
 
-    def post(self, request, key):
-        if key not in POOL_KEYS:
-            return bad("Unknown campaign.", status.HTTP_404_NOT_FOUND)
-        camp = get_object_or_404(Campaign, key=key)
-        rows = lead_rows(pool_loans(key))
-        if not request.data.get("confirm"):
-            return Response({"preview": True, "eligible": len(rows), "configured": camp.configured, "enabled": enabled(),
-                             "sample": [{"account_id": r["field_2"], "name": r["field_1"]} for r in rows[:5]]})
-        if not enabled():
-            return bad("The dialler is switched off on this server.")
-        if not camp.configured:
-            return bad("Set the Smartflo campaign id and lead-list id for this campaign first (Admin, Setup).")
-        if not rows:
-            return bad("Nobody is eligible for this campaign right now.")
-        client, sent, error = get_client(), 0, ""
-        try:
-            for i in range(0, len(rows), CHUNK):
-                client.bulk_add_leads(camp.smartflo_list_id, rows[i:i + CHUNK])
-                sent += len(rows[i:i + CHUNK])
-        except SmartfloError as exc:
-            error = str(exc)[:200]
-        CampaignPush.objects.create(campaign=camp, by=request.user, leads=sent, ok=not error, error=error)
-        if sent:
-            camp.last_pushed_at, camp.last_pushed_count = timezone.now(), sent
-            camp.save(update_fields=["last_pushed_at", "last_pushed_count"])
-        audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
-              detail=f"{key}: {sent} of {len(rows)}" + (" (stopped on an error)" if error else ""))
-        if error:
-            return Response({"detail": f"Smartflo stopped after {sent} of {len(rows)} customers. {error}", "sent": sent}, status=502)
-        return Response({"sent": sent})
+    def post(self, request):
+        ser = CampaignWriteSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        d = ser.validated_data
+        label = (d.get("label") or "").strip()
+        if not label:
+            return bad("Give the campaign a name.")
+        if Campaign.objects.filter(label__iexact=label).exists():
+            return bad("A campaign with that name already exists.")
+        rules, err = clean_rules(d.get("rules"))
+        if err:
+            return bad(err)
+        camp = Campaign(key=_unique_key(label), label=label, custom=True, rules=rules, sort=100 + Campaign.objects.count(),
+                        smartflo_campaign_id=d.get("smartflo_campaign_id", ""), smartflo_list_id=d.get("smartflo_list_id", ""),
+                        updated_by=request.user)
+        if d.get("active") and not camp.configured:
+            return bad("Enter both the Smartflo campaign id and the lead-list id before switching a campaign on.")
+        camp.active = bool(d.get("active"))
+        camp.save()
+        audit(request, "campaign_created", user=request.user, object_type="campaign", object_id=camp.pk, detail=camp.key)
+        return Response(_campaign_row(camp, request.user), status=201)
 
 
 # ------------------------------------------------------------------ admin setup
@@ -131,9 +167,6 @@ class SetupView(APIView):
         agents = User.objects.filter(role=Role.AGENT, is_active=True).order_by("name")
         return Response({
             "status": {"enabled": bool(settings.SMARTFLO_ENABLED), "token_set": bool(settings.SMARTFLO_API_TOKEN)},
-            "campaigns": [{"key": c.key, "label": c.label, "smartflo_campaign_id": c.smartflo_campaign_id,
-                           "smartflo_list_id": c.smartflo_list_id, "active": c.active, "configured": c.configured}
-                          for c in Campaign.objects.all()],
             "dispositions": [{"code": k, "label": v[0], "smartflo_status_id": maps.get(k, "")} for k, v in DISPOSITIONS.items()],
             "agents": [{"id": a.pk, "name": a.name, "email": a.email,
                         "smartflo_email": profiles[a.pk].smartflo_email if a.pk in profiles else "",
@@ -141,27 +174,47 @@ class SetupView(APIView):
         })
 
 
-class CampaignUpdateSerializer(serializers.Serializer):
-    smartflo_campaign_id = _digits_field()
-    smartflo_list_id = _digits_field()
-    active = serializers.BooleanField(required=False)
-
-
 class CampaignUpdateView(APIView):
-    permission_classes = [IsAdmin]
+    """Head or Admin: edit a campaign's Smartflo ids, switch it on or off, and (custom campaigns only) rename it or change its rules."""
+
+    permission_classes = [IsHead]
 
     def put(self, request, key):
         camp = get_object_or_404(Campaign, key=key)
-        ser = CampaignUpdateSerializer(data=request.data)
+        ser = CampaignWriteSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        for k, v in ser.validated_data.items():
-            setattr(camp, k, v)
+        d = ser.validated_data
+        if camp.custom:
+            if "label" in d:
+                label = d["label"].strip()
+                if not label or Campaign.objects.filter(label__iexact=label).exclude(pk=camp.pk).exists():
+                    return bad("Give the campaign a name that is not already used.")
+                camp.label = label
+            if "rules" in d:
+                rules, err = clean_rules(d["rules"])
+                if err:
+                    return bad(err)
+                camp.rules = rules
+        for k in ("smartflo_campaign_id", "smartflo_list_id", "active"):
+            if k in d:
+                setattr(camp, k, d[k])
         if camp.active and not camp.configured:
-            return bad("Enter both the Smartflo campaign id and the lead-list id before activating.")
+            return bad("Enter both the Smartflo campaign id and the lead-list id before switching a campaign on.")
         camp.updated_by = request.user
         camp.save()
         audit(request, "campaign_updated", user=request.user, object_type="campaign", object_id=camp.pk, detail=f"{key} active={camp.active}")
-        return Response({"ok": True})
+        return Response(_campaign_row(camp, request.user))
+
+    def delete(self, request, key):
+        camp = get_object_or_404(Campaign, key=key)
+        if not camp.custom:
+            return bad("The built-in campaigns cannot be deleted. Switch them off instead.")
+        try:
+            camp.delete()
+        except ProtectedError:
+            return bad("Agents have already dialled in this campaign, so it cannot be deleted. Switch it off instead.")
+        audit(request, "campaign_deleted", user=request.user, object_type="campaign", detail=key)
+        return Response(status=204)
 
 
 class DispositionMapView(APIView):
@@ -236,7 +289,7 @@ class StatusView(APIView):
 
 
 class StartSerializer(serializers.Serializer):
-    campaign = serializers.ChoiceField(choices=POOL_KEYS)
+    campaign = serializers.CharField(max_length=40)
     smartflo_password = serializers.CharField(max_length=200, trim_whitespace=False)
 
 
@@ -255,7 +308,9 @@ class SessionStartView(APIView):
         p = _profile(request.user)
         if not (p and p.smartflo_email):
             return bad("Your Smartflo login is not set up yet. Ask the Admin to add it under Campaigns, Setup.")
-        camp = get_object_or_404(Campaign, key=d["campaign"])
+        camp = Campaign.objects.filter(key=d["campaign"]).first()
+        if camp is None:
+            return bad("Unknown campaign.")
         if not (camp.active and camp.configured):
             return bad("This campaign is not switched on yet.")
         client = get_client()
@@ -282,7 +337,31 @@ class SessionStartView(APIView):
         s = DialerSession.objects.create(user=request.user, campaign=camp, token_enc=seal(token),
                                          token_expires_at=timezone.now() + timedelta(minutes=TOKEN_MINUTES))
         audit(request, "dialer_started", user=request.user, object_type="campaign", object_id=camp.pk, detail=camp.key)
-        return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at})
+        sent, total, error = push_for_agent(camp, request.user, client)
+        if sent or error:
+            audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
+                  detail=f"{camp.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
+        return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at,
+                         "push": {"sent": sent, "total": total, "error": error}})
+
+
+class SessionPushView(APIView):
+    """Send the agent's customers again (after a push error, or when new customers were allocated since starting)."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        s, _ = current_session(request.user)
+        if not s:
+            return bad("Start the campaign first.")
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        sent, total, error = push_for_agent(s.campaign, request.user, get_client())
+        if sent or error:
+            audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=s.campaign_id,
+                  detail=f"{s.campaign.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
+        return Response({"sent": sent, "total": total, "error": error})
 
 
 class SessionStopView(APIView):
@@ -331,6 +410,8 @@ class SessionView(APIView):
         except SmartfloError as exc:
             out["warning"] = str(exc)
         out["unparsed_fields"] = unparsed
+        s.last_seen_at, s.on_call = timezone.now(), bool(calls)
+        s.save(update_fields=["last_seen_at", "on_call"])
         if calls:
             call = calls[0]
             matches = _match(call["number"])
@@ -400,6 +481,61 @@ class SessionReleaseView(APIView):
             return bad("Nothing to release.")
         ok, warning = _release(s, code)
         return Response({"released": ok, "warning": warning})
+
+
+# ------------------------------------------------------------------ the head's live view
+IDLE_SECONDS = 30  # an agent whose Dialer screen has not checked in for this long is shown as idle
+
+
+class LiveView(APIView):
+    """Head or Admin: how each campaign is going today, who is dialling right now, and the latest outcomes.
+    Built from what the CRM already knows (pushes, outcomes, the agents' Dialer screens), so it makes no calls to Smartflo.
+    Customers are shown by account id and name only, never phone numbers."""
+
+    permission_classes = [IsHead]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def get(self, request):
+        now = timezone.now()
+        today = timezone.localdate()
+        start = timezone.make_aware(datetime.combine(today, time.min))
+        pushed = defaultdict(set)
+        for cid, lid in PushedLead.objects.filter(pushed_on=today).values_list("campaign_id", "loan_id"):
+            pushed[cid].add(lid)
+        outcomes = defaultdict(set)  # loan -> outcome codes logged today
+        all_loans = set().union(*pushed.values()) if pushed else set()
+        for lid, code in Activity.objects.filter(kind=Activity.Kind.DISPOSITION, created_at__gte=start, loan_id__in=all_loans).values_list("loan_id", "disposition"):
+            outcomes[lid].add(code)
+        camps = []
+        for c in Campaign.objects.all():
+            ids = pushed.get(c.pk, set())
+            called = [l for l in ids if l in outcomes]
+            camps.append({
+                "key": c.key, "label": c.label, "active": c.active, "custom": c.custom,
+                "waiting": campaign_loans(c).count(), "pushed_today": len(ids), "called": len(called),
+                "connected": sum(1 for l in called if outcomes[l] & CONNECTED),
+                "promises": sum(1 for l in called if "ptp_given" in outcomes[l]),
+                "paid": sum(1 for l in called if "paid_today" in outcomes[l]),
+            })
+        agents = []
+        sessions = DialerSession.objects.filter(ended_at__isnull=True, token_expires_at__gt=now).select_related("user", "campaign", "last_loan")
+        calls_today = {u: n for u, n in Activity.objects.filter(kind=Activity.Kind.DISPOSITION, created_at__gte=start)
+                       .values_list("user_id").annotate(n=Count("id"))}
+        for s in sessions.order_by("started_at"):
+            seen = s.last_seen_at and (now - s.last_seen_at).total_seconds() <= IDLE_SECONDS
+            state = "on_call" if (seen and s.on_call) else "waiting" if seen else "idle"
+            agents.append({"name": s.user.name, "campaign": s.campaign.label, "started_at": s.started_at, "state": state,
+                           "account_id": s.last_loan.account_id if (state == "on_call" and s.last_loan) else "",
+                           "borrower_name": s.last_loan.borrower_name if (state == "on_call" and s.last_loan) else "",
+                           "outcomes_today": calls_today.get(s.user_id, 0)})
+        feed = []
+        for a in (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, created_at__gte=start)
+                  .select_related("loan", "user").order_by("-created_at", "-id")[:40]):
+            feed.append({"at": a.created_at, "agent": a.user.name if a.user else "", "account_id": a.loan.account_id,
+                         "borrower_name": a.loan.borrower_name, "outcome": DISPOSITION_LABELS.get(a.disposition, a.disposition),
+                         "connected": a.disposition in CONNECTED})
+        return Response({"as_of": now, "enabled": enabled(), "campaigns": camps, "agents": agents, "feed": feed})
 
 
 # ------------------------------------------------------------------ click to call
