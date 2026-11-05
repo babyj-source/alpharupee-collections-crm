@@ -57,6 +57,7 @@ export default function Account({ loan: first, onClose, onChanged }) {
         <dt>Borrower</dt><dd>{loan.borrower_name || "—"}</dd>
         <dt>Overdue</dt><dd>{inr(loan.overdue_amount)} ({inr(loan.demand_due)} dues + {inr(loan.fee_due)} fees)</dd>
         <dt>Outstanding principal</dt><dd>{inr(loan.outstanding)}</dd>
+        <dt>Closure amount</dt><dd>{inr(loan.closure_amount)}<span className="muted"> as on {fmtDate(loan.closure_as_on)}</span></dd>
         <dt>Instalment</dt><dd>{inr(loan.installment_amount)}</dd>
         <dt>Days past due</dt><dd>{loan.dpd}</dd>
         <dt>Oldest due</dt><dd>{loan.oldest_due_date || "—"}</dd>

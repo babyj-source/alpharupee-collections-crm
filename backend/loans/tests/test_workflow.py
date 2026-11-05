@@ -362,6 +362,7 @@ class ExportTests(Base):
             self.assertNotIn(raw, text)
         self.assertEqual(len(text.strip().splitlines()), 3)  # header + L2 + L1 (L3 has no overdue, L4 is closed)
         self.assertIn("Agent Two", text)
+        self.assertIn("Closure amount (INR),Closure as on", text)
         self.assertTrue(AuditLog.objects.filter(action="loans_exported", detail="2 rows").exists())
 
     def test_formula_text_is_neutralised(self):

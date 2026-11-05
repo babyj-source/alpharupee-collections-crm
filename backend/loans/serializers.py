@@ -38,7 +38,7 @@ class LoanSerializer(serializers.ModelSerializer):
         fields = [
             "id", "account_id", "borrower_name", "mobile", "contacts", "ref_slots", "product_code", "branch_code",
             "operational_status", "oldest_due_date", "last_repayment_date", "demand_due", "fee_due", "overdue_amount",
-            "outstanding", "installment_amount", "dpd", "crm_status", "note", "agent", "synced_at",
+            "outstanding", "closure_amount", "closure_as_on", "installment_amount", "dpd", "crm_status", "note", "agent", "synced_at",
             "last_disposition", "last_disposition_label", "last_disposition_at", "callback_at", "open_ptp",
         ]
         read_only_fields = fields

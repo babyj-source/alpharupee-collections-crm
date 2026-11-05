@@ -10,7 +10,9 @@ ACCOUNT_COLUMNS = (
     "account_id, customer_id, holder_num, product_code, branch_code, operational_status, dpd, "
     "oldest_due_demand_date, last_repayment_date, total_demand_due_magnitude, total_fee_due_magnitude, "
     "balance_magnitude, installment_amount_magnitude, first_name, middle_name, last_name, "
-    "udf_text2, udf_text3, udf_text4"  # Encore loan-account UDFs: reference name, reference mobile, relationship
+    "udf_text2, udf_text3, udf_text4, "  # Encore loan-account UDFs: reference name, reference mobile, relationship
+    "total_normal_interest_due_magnitude, total_penal_interest_due_magnitude, "  # closure amount parts
+    "booked_not_due_normal_interest_magnitude, booked_not_due_penal_interest_magnitude, current_working_date"
 )
 CUSTOMER_COLUMNS = (
     "customer_id, phone1, phone2, reference_name, reference_phone, reference_relationship_type, "

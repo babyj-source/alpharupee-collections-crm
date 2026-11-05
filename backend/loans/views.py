@@ -329,7 +329,7 @@ class ReferenceView(APIView):
 
 EXPORT_HEAD = [
     "Account ID", "Borrower", "Mobile (masked)", "Product", "Branch", "Status in LMS", "DPD", "Bucket",
-    "Overdue (INR)", "Outstanding principal (INR)", "Oldest due date", "Last payment date", "CRM status", "Last call outcome",
+    "Overdue (INR)", "Outstanding principal (INR)", "Closure amount (INR)", "Closure as on", "Oldest due date", "Last payment date", "CRM status", "Last call outcome",
     "Last call outcome at", "Call back at", "Open promise date", "Open promise amount (INR)", "Assigned agent", "Agent e-mail",
 ]
 
@@ -363,7 +363,7 @@ class ExportView(APIView):
             w.writerow([
                 safe_cell(l.account_id), safe_cell(l.borrower_name), l.masked_mobile, safe_cell(l.product_code),
                 safe_cell(l.branch_code), safe_cell(l.operational_status), l.dpd, bucket_of(l.dpd), l.overdue_amount,
-                l.outstanding, l.oldest_due_date or "", l.last_repayment_date or "", l.get_crm_status_display(),
+                l.outstanding, l.closure_amount, l.closure_as_on or "", l.oldest_due_date or "", l.last_repayment_date or "", l.get_crm_status_display(),
                 DISPOSITION_LABELS.get(l.last_disposition, ""),
                 timezone.localtime(l.last_disposition_at).strftime("%Y-%m-%d %H:%M") if l.last_disposition_at else "",
                 timezone.localtime(l.callback_at).strftime("%Y-%m-%d %H:%M") if l.callback_at else "",
