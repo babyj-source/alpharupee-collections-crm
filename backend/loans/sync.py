@@ -5,7 +5,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Loan, SyncRun
+from .models import Loan, Ptp, SyncRun
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +119,10 @@ def run_sync(reader):
         with transaction.atomic():
             Loan.objects.bulk_create(to_create, batch_size=500)
             Loan.objects.bulk_update(to_update, LMS_FIELDS + CONTACT_FIELDS + ["synced_at"], batch_size=500)
+            # A promise is kept once the LMS shows nothing overdue on the account.
+            Ptp.objects.filter(status=Ptp.State.OPEN, loan__demand_due=0, loan__fee_due=0).update(
+                status=Ptp.State.KEPT, closed_at=now
+            )
         run.ok, run.rows_read = True, rows_read
         run.created, run.updated = len(to_create), len(to_update)
     except Exception as exc:  # recorded so the head can see a failing sync; no credentials in the message

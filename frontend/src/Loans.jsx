@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, inr } from "./api.js";
+import Account, { ptpChip } from "./Account.jsx";
 
 const STATUSES = [
   ["new", "New"], ["contacted", "Contacted"], ["reference_contacted", "Reference contacted"], ["promised", "Promise to pay"],
@@ -7,9 +8,16 @@ const STATUSES = [
 ];
 const label = Object.fromEntries(STATUSES);
 
-export default function Loans({ user }) {
+const VIEWS = {
+  overdue: { label: "Overdue only", params: { overdue: "1", active: "1" } },
+  active: { label: "All active", params: { overdue: "0", active: "1" } },
+  all: { label: "Everything, including closed", params: { overdue: "0", active: "0" } },
+};
+
+// mode: "worklist" opens on overdue accounts, "customers" on everything allocated (the agent's "My customers").
+export default function Loans({ user, mode = "worklist" }) {
   const isHead = user.role === "head";
-  const [filters, setFilters] = useState({ q: "", overdue: "1", crm_status: "", agent: "" });
+  const [filters, setFilters] = useState({ q: "", view: mode === "customers" ? "all" : "overdue", crm_status: "", agent: "" });
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ results: [], count: 0 });
   const [agents, setAgents] = useState([]);
@@ -19,10 +27,15 @@ export default function Loans({ user }) {
   const [error, setError] = useState("");
 
   const load = useCallback(() => {
-    const p = new URLSearchParams({ page });
-    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v));
-    api(`/loans?${p}`).then(setData).catch((e) => setError(e.message));
-  }, [filters, page]);
+    api(`/loans?${query(page)}`).then(setData).catch((e) => setError(e.message));
+  }, [filters, page]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function query(pg) {
+    const { view, ...rest } = filters;
+    const p = new URLSearchParams(pg ? { page: pg } : {});
+    Object.entries({ ...VIEWS[view].params, ...rest }).forEach(([k, v]) => v && p.set(k, v));
+    return p.toString();
+  }
 
   useEffect(load, [load]);
   useEffect(() => {
@@ -46,20 +59,27 @@ export default function Loans({ user }) {
     <div className="stack">
       <div className="filters">
         <input placeholder="Search account or name" value={filters.q} onChange={set("q")} />
-        <select value={filters.overdue} onChange={set("overdue")}>
-          <option value="1">Overdue only</option><option value="0">All active</option>
+        <select value={filters.view} onChange={set("view")} aria-label="Which accounts">
+          {Object.entries(VIEWS).map(([v, x]) => <option key={v} value={v}>{x.label}</option>)}
         </select>
         <select value={filters.crm_status} onChange={set("crm_status")}>
           <option value="">Any status</option>
           {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
         {isHead && (
-          <select value={filters.agent} onChange={set("agent")}>
+          <select value={filters.agent} onChange={set("agent")} aria-label="Agent">
             <option value="">Any agent</option><option value="none">Unassigned</option>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
       </div>
+
+      {isHead && (
+        <div className="row small">
+          <a href={`/api/loans/export.csv?${query()}`} download>Download these accounts (CSV)</a>
+          <span className="muted">Numbers are masked in the file; each download is logged.</span>
+        </div>
+      )}
 
       {isHead && picked.size > 0 && (
         <div className="card row">
@@ -79,7 +99,7 @@ export default function Loans({ user }) {
             <tr>
               {isHead && <th />}
               <th>Account</th><th>Borrower</th><th className="r">DPD</th><th className="r">Overdue</th>
-              <th>Status</th>{isHead && <th>Agent</th>}
+              <th>Status</th><th>Last outcome</th><th>Promise</th>{isHead && <th>Agent</th>}
             </tr>
           </thead>
           <tbody>
@@ -91,10 +111,12 @@ export default function Loans({ user }) {
                 <td className="r">{l.dpd}</td>
                 <td className="r">{inr(l.overdue_amount)}</td>
                 <td>{label[l.crm_status]}</td>
+                <td>{l.last_disposition_label || <span className="muted">Not called</span>}</td>
+                <td>{l.open_ptp ? <span className={`chip ${l.open_ptp.state}`}>{ptpChip[l.open_ptp.state]} · {new Date(`${l.open_ptp.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span> : <span className="muted">—</span>}</td>
                 {isHead && <td>{l.agent ? l.agent.name : <span className="muted">Unassigned</span>}</td>}
               </tr>
             ))}
-            {data.results.length === 0 && <tr><td colSpan="7" className="muted">Nothing to show.</td></tr>}
+            {data.results.length === 0 && <tr><td colSpan="9" className="muted">Nothing to show.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -106,82 +128,7 @@ export default function Loans({ user }) {
         <button className="ghost" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</button>
       </div>
 
-      {open && <Detail loan={open} onClose={() => setOpen(null)} onSaved={(l) => { setOpen(l); load(); }} />}
+      {open && <Account loan={open} onClose={() => setOpen(null)} onChanged={() => load()} />}
     </div>
-  );
-}
-
-function Detail({ loan, onClose, onSaved }) {
-  const [status, setStatus] = useState(loan.crm_status);
-  const [note, setNote] = useState(loan.note);
-  const [shown, setShown] = useState({}); // contact key -> full number, only while visible
-  const [error, setError] = useState("");
-  const timers = useRef({});
-
-  useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), []);
-
-  async function save() {
-    setError("");
-    try { onSaved(await api(`/loans/${loan.id}`, { method: "PATCH", body: { crm_status: status, note } })); }
-    catch (e) { setError(e.message); }
-  }
-  async function reveal(key) {
-    setError("");
-    try {
-      const d = await api(`/loans/${loan.id}/mobile`, { method: "POST", body: { which: key } });
-      setShown((s) => ({ ...s, [key]: d.mobile }));
-      clearTimeout(timers.current[key]);
-      timers.current[key] = setTimeout(() => setShown((s) => ({ ...s, [key]: undefined })), 20000); // hide again
-    } catch (e) { setError(e.message); }
-  }
-
-  const contacts = loan.contacts || [];
-  return (
-    <aside className="drawer card" role="dialog" aria-label={`Account ${loan.account_id}`}>
-      <div className="row"><h2>{loan.account_id}</h2><span className="grow" /><button className="ghost" onClick={onClose}>Close</button></div>
-      <dl>
-        <dt>Borrower</dt><dd>{loan.borrower_name || "—"}</dd>
-        <dt>Overdue</dt><dd>{inr(loan.overdue_amount)} ({inr(loan.demand_due)} dues + {inr(loan.fee_due)} fees)</dd>
-        <dt>Outstanding</dt><dd>{inr(loan.outstanding)}</dd>
-        <dt>Instalment</dt><dd>{inr(loan.installment_amount)}</dd>
-        <dt>Days past due</dt><dd>{loan.dpd}</dd>
-        <dt>Oldest due</dt><dd>{loan.oldest_due_date || "—"}</dd>
-        <dt>Last payment</dt><dd>{loan.last_repayment_date || "—"}</dd>
-        <dt>Product / branch</dt><dd>{loan.product_code || "—"} / {loan.branch_code || "—"}</dd>
-      </dl>
-
-      <section>
-        <h3>Who to call</h3>
-        {contacts.length === 0 && <p className="muted small">No phone numbers on file.</p>}
-        <ul className="contacts">
-          {contacts.map((c) => (
-            <li key={c.key}>
-              <div>
-                <strong>{c.label}</strong>
-                {c.name && c.key !== "borrower" && c.key !== "alt" ? ` · ${c.name}` : ""}
-                {c.relation ? <span className="muted"> ({c.relation})</span> : null}
-              </div>
-              <div className="row">
-                <span>{shown[c.key] || c.mobile}</span>
-                {!shown[c.key] && <button className="ghost" onClick={() => reveal(c.key)}>Show number</button>}
-              </div>
-            </li>
-          ))}
-        </ul>
-        {Object.values(shown).some(Boolean) && <p className="muted small">Numbers hide again after 20 seconds. Each view is logged.</p>}
-        {contacts.some((c) => c.key.startsWith("ref")) && <p className="muted small">If the borrower cannot be reached, call a reference and set the status to “Reference contacted”.</p>}
-      </section>
-
-      <label>Status
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-      </label>
-      <label>Note
-        <textarea rows="3" maxLength="500" value={note} onChange={(e) => setNote(e.target.value)} />
-      </label>
-      {error && <p className="error" role="alert">{error}</p>}
-      <button onClick={save}>Save</button>
-    </aside>
   );
 }
