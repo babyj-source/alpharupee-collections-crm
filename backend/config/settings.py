@@ -113,7 +113,7 @@ REST_FRAMEWORK = {
 # ---- login security
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCK_MINUTES = 15
-OTP_TTL_SECONDS = 300
+OTP_TTL_SECONDS = 600  # the SMS template says "Valid for 10 minutes"
 OTP_MAX_ATTEMPTS = 5
 OTP_MAX_SENDS_PER_HOUR = 5
 # Prints the OTP to the server log instead of sending it. Never turn this on in production.
@@ -123,6 +123,8 @@ OTP_DEV_MODE = env_bool("OTP_DEV_MODE", False)
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")
 MSG91_OTP_TEMPLATE_ID = env("MSG91_OTP_TEMPLATE_ID", "")
 MSG91_OTP_URL = env("MSG91_OTP_URL", "https://control.msg91.com/api/v5/otp")
+# Name of the code variable in the approved template (##number## in template OTP-1).
+MSG91_OTP_VARIABLE = env("MSG91_OTP_VARIABLE", "number")
 
 # ---- LMS (read-only MySQL)
 LMS_DB = {

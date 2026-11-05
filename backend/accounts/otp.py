@@ -39,19 +39,21 @@ def send_sms(mobile, code):
             settings.MSG91_OTP_URL,
             params={"template_id": settings.MSG91_OTP_TEMPLATE_ID, "mobile": mobile, "otp": code},
             headers={"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json"},
-            json={},
+            json={settings.MSG91_OTP_VARIABLE: code},
             timeout=10,
         )
     except requests.RequestException as exc:
         raise OtpDeliveryError("MSG91 request failed") from exc
-    ok = resp.status_code == 200
+    ok, reason = resp.status_code == 200, ""
     try:
-        ok = ok and resp.json().get("type") == "success"
+        body = resp.json()
+        ok = ok and body.get("type") == "success"
+        reason = str(body.get("message", ""))[:120]
     except ValueError:
         ok = False
     if not ok:
-        # Do not log the body: it can echo the mobile number.
-        log.error("MSG91 refused the OTP (HTTP %s)", resp.status_code)
+        # Only MSG91's own short reason is logged (for example an unapproved template or a blocked IP), never the number or code.
+        log.error("MSG91 refused the OTP (HTTP %s): %s", resp.status_code, reason or "no message")
         raise OtpDeliveryError("MSG91 refused the request")
 
 
