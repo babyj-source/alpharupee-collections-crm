@@ -13,6 +13,8 @@ urlpatterns = [
     path("loans/<int:pk>/disposition", views.DispositionView.as_view()),
     path("loans/<int:pk>/timeline", views.TimelineView.as_view()),
     path("loans/<int:pk>/references/<int:slot>", views.ReferenceView.as_view()),
+    path("loans/<int:pk>/callback", views.CallbackClearView.as_view()),
+    path("callbacks", views.CallbackListView.as_view()),
     path("ptps", views.PtpListView.as_view()),
     path("ptps/<int:pk>", views.PtpDetailView.as_view()),
     path("allocation/csv", bulk.AllocationCsvView.as_view()),

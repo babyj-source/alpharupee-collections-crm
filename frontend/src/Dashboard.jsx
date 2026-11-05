@@ -17,7 +17,7 @@ export default function Dashboard({ user }) {
     <div className="stack">
       <div className="kpis">
         <Kpi label="Active accounts" value={num(d.accounts)} />
-        <Kpi label="Outstanding" value={inr(d.outstanding)} />
+        <Kpi label="Outstanding principal" value={inr(d.outstanding)} />
         <Kpi label="Overdue accounts" value={num(d.overdue_accounts)} />
         <Kpi label="Overdue amount" value={inr(d.overdue_amount)} />
       </div>
@@ -26,6 +26,8 @@ export default function Dashboard({ user }) {
         <Kpi label="Promises open" value={num(d.ptp.open.count)} sub={inr(d.ptp.open.amount)} />
         <Kpi label="Promises due today" value={num(d.ptp.today.count)} sub={inr(d.ptp.today.amount)} />
         <Kpi label="Promises lapsed" value={num(d.ptp.lapsed.count)} sub={inr(d.ptp.lapsed.amount)} />
+        <Kpi label="Call-backs due now" value={num(d.callbacks.due)} />
+        <Kpi label="Call-backs today" value={num(d.callbacks.today)} />
       </div>
 
       <section className="card">

@@ -68,13 +68,14 @@ class Loan(models.Model):
     status_changed_at = models.DateTimeField(null=True, blank=True)
     last_disposition = models.CharField(max_length=30, blank=True)
     last_disposition_at = models.DateTimeField(null=True, blank=True)
+    callback_at = models.DateTimeField(null=True, blank=True, help_text="agreed call-back time, cleared once handled")
 
     first_seen_at = models.DateTimeField(auto_now_add=True)
     synced_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["tenant_code", "account_id"], name="uniq_loan_key")]
-        indexes = [models.Index(fields=["operational_status", "-dpd"]), models.Index(fields=["assigned_agent"])]
+        indexes = [models.Index(fields=["operational_status", "-dpd"]), models.Index(fields=["assigned_agent"]), models.Index(fields=["callback_at"])]
 
     def __str__(self):
         return f"{self.tenant_code}/{self.account_id}"

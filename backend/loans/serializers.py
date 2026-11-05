@@ -1,10 +1,10 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Activity, CrmStatus, Loan, Ptp
-from .workflow import DISPOSITION_LABELS, DISPOSITIONS, PTP_MAX_DAYS, PTP_REASONS
+from .workflow import CALL_END_HOUR, CALL_START_HOUR, DISPOSITION_LABELS, DISPOSITIONS, PTP_MAX_DAYS, PTP_REASONS
 
 
 def open_ptp(loan):
@@ -39,7 +39,7 @@ class LoanSerializer(serializers.ModelSerializer):
             "id", "account_id", "borrower_name", "mobile", "contacts", "ref_slots", "product_code", "branch_code",
             "operational_status", "oldest_due_date", "last_repayment_date", "demand_due", "fee_due", "overdue_amount",
             "outstanding", "installment_amount", "dpd", "crm_status", "note", "agent", "synced_at",
-            "last_disposition", "last_disposition_label", "last_disposition_at", "open_ptp",
+            "last_disposition", "last_disposition_label", "last_disposition_at", "callback_at", "open_ptp",
         ]
         read_only_fields = fields
 
@@ -81,18 +81,31 @@ class DispositionSerializer(serializers.Serializer):
     ptp_date = serializers.DateField(required=False)
     ptp_amount = serializers.DecimalField(max_digits=16, decimal_places=2, required=False, min_value=1)
     ptp_reason = serializers.ChoiceField(choices=list(PTP_REASONS), required=False)
+    callback_date = serializers.DateField(required=False)
+    callback_time = serializers.TimeField(required=False, input_formats=["%H:%M"])
 
     def validate(self, data):
-        if data["code"] != "ptp_given":
-            return data
         today = timezone.localdate()
-        d = data.get("ptp_date")
-        if d is None:
-            raise serializers.ValidationError({"ptp_date": "Choose the promise date."})
-        if d < today or d > today + timedelta(days=PTP_MAX_DAYS):
-            raise serializers.ValidationError({"ptp_date": f"The promise date must be within the next {PTP_MAX_DAYS} days."})
-        if not data.get("ptp_reason"):
-            raise serializers.ValidationError({"ptp_reason": "Choose the reason for the delay."})
+        if data["code"] == "ptp_given":
+            d = data.get("ptp_date")
+            if d is None:
+                raise serializers.ValidationError({"ptp_date": "Choose the promise date."})
+            if d < today or d > today + timedelta(days=PTP_MAX_DAYS):
+                raise serializers.ValidationError({"ptp_date": f"The promise date must be within the next {PTP_MAX_DAYS} days."})
+            if not data.get("ptp_reason"):
+                raise serializers.ValidationError({"ptp_reason": "Choose the reason for the delay."})
+        elif data["code"] == "call_back_later":
+            d, t = data.get("callback_date"), data.get("callback_time")
+            if d is None or t is None:
+                raise serializers.ValidationError({"callback_time": "Choose the call-back date and time."})
+            if not (time(CALL_START_HOUR) <= t < time(CALL_END_HOUR)):
+                raise serializers.ValidationError({"callback_time": f"Call-backs must be between {CALL_START_HOUR:02d}:00 and {CALL_END_HOUR:02d}:00."})
+            if d > today + timedelta(days=PTP_MAX_DAYS):
+                raise serializers.ValidationError({"callback_date": f"The call-back must be within the next {PTP_MAX_DAYS} days."})
+            when = timezone.make_aware(datetime.combine(d, t))
+            if when <= timezone.now():
+                raise serializers.ValidationError({"callback_time": "That time has already passed. Choose a later time."})
+            data["callback_at"] = when
         return data
 
 
@@ -153,3 +166,32 @@ class CsvTextSerializer(serializers.Serializer):
     text = serializers.CharField(max_length=2_000_000, trim_whitespace=False)
     filename = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
     apply = serializers.BooleanField(required=False, default=False)
+
+
+def callback_state(loan):
+    when = timezone.localtime(loan.callback_at)
+    now = timezone.localtime()
+    return "due" if when <= now else "today" if when.date() == now.date() else "upcoming"
+
+
+class CallbackSerializer(serializers.ModelSerializer):
+    loan_id = serializers.IntegerField(source="id", read_only=True)
+    state = serializers.SerializerMethodField()
+    agent_name = serializers.SerializerMethodField()
+    last_disposition_label = serializers.SerializerMethodField()
+    overdue_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Loan
+        fields = ["loan_id", "account_id", "borrower_name", "dpd", "overdue_amount", "callback_at", "state",
+                  "agent_name", "last_disposition_label"]
+        read_only_fields = fields
+
+    def get_state(self, obj):
+        return callback_state(obj)
+
+    def get_agent_name(self, obj):
+        return obj.assigned_agent.name if obj.assigned_agent else ""
+
+    def get_last_disposition_label(self, obj):
+        return DISPOSITION_LABELS.get(obj.last_disposition, "")

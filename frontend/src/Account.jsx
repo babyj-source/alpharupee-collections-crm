@@ -33,6 +33,11 @@ export default function Account({ loan: first, onClose, onChanged }) {
 
   const updated = (l) => { setLoan(l); onChanged?.(l); loadTimeline(); };
 
+  async function clearCallback() {
+    setError("");
+    try { updated(await api(`/loans/${loan.id}/callback`, { method: "DELETE" })); }
+    catch (e) { setError(e.message); }
+  }
   async function reveal(key) {
     setError("");
     try {
@@ -51,13 +56,15 @@ export default function Account({ loan: first, onClose, onChanged }) {
       <dl>
         <dt>Borrower</dt><dd>{loan.borrower_name || "—"}</dd>
         <dt>Overdue</dt><dd>{inr(loan.overdue_amount)} ({inr(loan.demand_due)} dues + {inr(loan.fee_due)} fees)</dd>
-        <dt>Outstanding</dt><dd>{inr(loan.outstanding)}</dd>
+        <dt>Outstanding principal</dt><dd>{inr(loan.outstanding)}</dd>
         <dt>Instalment</dt><dd>{inr(loan.installment_amount)}</dd>
         <dt>Days past due</dt><dd>{loan.dpd}</dd>
         <dt>Oldest due</dt><dd>{loan.oldest_due_date || "—"}</dd>
         <dt>Last payment</dt><dd>{loan.last_repayment_date || "—"}</dd>
         <dt>Product / branch</dt><dd>{loan.product_code || "—"} / {loan.branch_code || "—"}</dd>
         <dt>Last outcome</dt><dd>{loan.last_disposition_label || "—"}{loan.last_disposition_at ? ` · ${fmtTime(loan.last_disposition_at)}` : ""}</dd>
+        <dt>Call back</dt>
+        <dd>{loan.callback_at ? <>{fmtTime(loan.callback_at)} <button className="ghost" onClick={clearCallback}>Mark done</button></> : "—"}</dd>
         <dt>Promise</dt>
         <dd>{p ? <>{inr(p.amount)} by {fmtDate(p.date)} <span className={`chip ${p.state}`}>{ptpChip[p.state]}</span></> : "—"}</dd>
       </dl>
@@ -153,7 +160,18 @@ function References({ loan, onSaved }) {
   );
 }
 
+const pad = (n) => String(n).padStart(2, "0");
+// Half-hour slots inside the calling window, e.g. 08:00 … 18:30.
+function slots(meta) {
+  const mins = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+  const out = [];
+  for (let m = mins(meta.call_start); m < mins(meta.call_end); m += meta.callback_step_minutes) out.push(`${pad(Math.floor(m / 60))}:${pad(m % 60)}`);
+  return out;
+}
+
 function Outcome({ loan, meta, onSaved }) {
+  const [cbDate, setCbDate] = useState("");
+  const [cbTime, setCbTime] = useState("");
   const [code, setCode] = useState("");
   const [date, setDate] = useState("");
   const [amount, setAmount] = useState("");
@@ -164,6 +182,9 @@ function Outcome({ loan, meta, onSaved }) {
   const closed = !["0", "active"].includes(String(loan.operational_status).trim().toLowerCase());
   if (closed) return <p className="muted small">This account is closed.</p>;
   const isPtp = code === "ptp_given";
+  const isCb = code === "call_back_later";
+  const allSlots = slots(meta);
+  const slotPassed = (t) => cbDate === meta.today && t <= meta.now; // today's slots that have gone
   const days = Array.from({ length: meta.ptp_max_days + 1 }, (_, i) => addDays(meta.today, i));
 
   async function save(e) {
@@ -171,9 +192,10 @@ function Outcome({ loan, meta, onSaved }) {
     setBusy(true); setError("");
     const body = { code, note };
     if (isPtp) { body.ptp_date = date; body.ptp_reason = reason; if (amount) body.ptp_amount = amount; }
+    if (isCb) { body.callback_date = cbDate; body.callback_time = cbTime; }
     try {
       onSaved(await api(`/loans/${loan.id}/disposition`, { method: "POST", body }));
-      setCode(""); setDate(""); setAmount(""); setReason(""); setNote("");
+      setCode(""); setDate(""); setAmount(""); setReason(""); setNote(""); setCbDate(""); setCbTime("");
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
 
@@ -206,11 +228,27 @@ function Outcome({ loan, meta, onSaved }) {
             </label>
           </>
         )}
+        {isCb && (
+          <>
+            <label>Call back on
+              <select value={cbDate} required onChange={(e) => { setCbDate(e.target.value); setCbTime(""); }}>
+                <option value="">Select…</option>
+                {days.map((d, i) => <option key={d} value={d}>{i === 0 ? "Today · " : ""}{fmtDate(d)}</option>)}
+              </select>
+            </label>
+            <label>Call back at (between {meta.call_start} and {meta.call_end})
+              <select value={cbTime} required disabled={!cbDate} onChange={(e) => setCbTime(e.target.value)}>
+                <option value="">{cbDate ? "Select…" : "Choose the date first"}</option>
+                {allSlots.map((t) => <option key={t} value={t} disabled={slotPassed(t)}>{t}{slotPassed(t) ? " (passed)" : ""}</option>)}
+              </select>
+            </label>
+          </>
+        )}
         <label>Note (optional)
           <input value={note} maxLength="300" onChange={(e) => setNote(e.target.value)} />
         </label>
         {error && <p className="error" role="alert">{error}</p>}
-        <button disabled={busy || !code}>{busy ? "Saving…" : "Save outcome"}</button>
+        <button disabled={busy || !code || (isCb && !(cbDate && cbTime))}>{busy ? "Saving…" : "Save outcome"}</button>
       </form>
     </section>
   );
