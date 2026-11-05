@@ -1,6 +1,6 @@
-# AlphaRupee Collections CRM
+# AlphaRupee CRM
 
-Collections CRM integrating Sensei LMS/LOS, Smartflo, MSG91 and CRIF.
+CRM for collections, integrating Sensei LMS/LOS, Smartflo, MSG91 and CRIF.
 `app/` holds the clickable prototype (v3). `backend/` (Django) and `frontend/` (React) are the real application, Phase 1 increment 1: see `docs/PHASE1.md`. Once `frontend/package.json` exists, the pipeline serves the React build instead of `app/`.
 
 ## How code reaches AWS
