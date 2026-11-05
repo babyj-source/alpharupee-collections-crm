@@ -18,3 +18,4 @@ id_rsa*
 
 # generated server bootstrap (contains the public deploy key and domain)
 crm-*-user-data.sh
+.crm-*.tar.gz
