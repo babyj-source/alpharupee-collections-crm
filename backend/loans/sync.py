@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.db import transaction
@@ -26,7 +26,10 @@ def _dec(v):
 def closure_amount(acc):
     """What the borrower must pay today to close the loan, built from the LMS view (the LMS has no ready value):
     principal outstanding + interest and penal interest already due + fees due + interest booked but not yet due.
-    total_demand_due already holds principal due, so it is not added again (checked on the live LMS data)."""
+    total_demand_due already holds principal due, so it is not added again (checked on the live LMS data).
+
+    Rounded to a whole rupee the way Encore shows it: 50 paise or more goes up, anything less goes down
+    (checked: 12,962.50 is 12,963 in Encore)."""
     return (
         abs(_dec(acc.get("balance_magnitude")))
         + _dec(acc.get("total_normal_interest_due_magnitude"))
@@ -34,7 +37,7 @@ def closure_amount(acc):
         + _dec(acc.get("total_fee_due_magnitude"))
         + _dec(acc.get("booked_not_due_normal_interest_magnitude"))
         + _dec(acc.get("booked_not_due_penal_interest_magnitude"))
-    ).quantize(Decimal("0.01"))
+    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def _int(v):
