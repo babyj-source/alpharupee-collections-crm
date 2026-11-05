@@ -63,7 +63,8 @@ else
   exit 1
 fi
 
-# keep the newest $KEEP releases, never the live or previous one
+# keep the newest $KEEP releases, never the live or previous one.
+# Tidying old releases must never fail a deploy that is already live (for example a file left by a command run as another user).
 ls -1dt "$BASE"/releases/* 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
-  [ "$old" = "$(readlink -f "$CUR")" ] || [ "$old" = "$PREV" ] || rm -rf "$old"
-done
+  [ "$old" = "$(readlink -f "$CUR")" ] || [ "$old" = "$PREV" ] || rm -rf "$old" || echo "warning: could not remove old release $old (left in place)" >&2
+done || true
