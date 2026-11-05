@@ -20,3 +20,20 @@ auth key and, for the payment-link templates, the Easebuzz link API.
   until the field is wired. No wrong date is ever sent.
 * If no payment link exists, the link templates also refuse to build.
 * BKT0/BKT3/NPA/demand are NORMAL SMS; BKT0, BKT1 and BKT2 are UNICODE (they contain the rupee sign).
+
+## WhatsApp templates (MSG91, namespace 544dead2_efd4_43d5_a69a_1ec9b1dbeafc)
+
+| Key | Template | MSG91 id | Used for | {{1}} {{2}} {{3}} {{4}} |
+|---|---|---|---|---|
+| wa_due2 | repay_due_in_2_days | 556471 | EMI due in 2 days | first name, EMI amount, due date (today + 2), link |
+| wa_due1 | repay_due_tomorrow | 556469 | EMI due tomorrow | first name, EMI amount, due date (today + 1), link |
+| wa_due0 | repay_due_today_img | 556481 | EMI due today (image header) | first name, EMI amount, due date (today), link |
+| wa_overdue | repay_overdue_missed | 556730 | missed payment (image header) | first name, oldest due date, closure amount, link |
+
+* Dates are written like 05-Oct-2026, as in the approved samples. "Outstanding" is the day's closure amount.
+* The two image templates need a public https image link; until Admin sets it (`PUT /api/messaging/whatsapp/<key>` with
+  `header_image_url`) the CRM refuses to build them. The WhatsApp sample image links in the template files are temporary
+  and are not used.
+* `GET /api/messaging/whatsapp` (head or admin) lists them. The text and ids cannot be edited in the CRM.
+* Which loans are "due in 2 days / tomorrow / today" needs the next EMI due date, which the CRM does not hold yet (same
+  gap as the SMS Demand Reminder). Missed payments (DPD 1 or more) need no extra field.
