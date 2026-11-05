@@ -25,6 +25,7 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
   const [shown, setShown] = useState({}); // contact key -> full number, only while visible
   const [error, setError] = useState("");
   const [calling, setCalling] = useState("");
+  const [callNote, setCallNote] = useState("");
   const timers = useRef({});
 
   useEffect(() => { setLoan(first); }, [first]);
@@ -41,9 +42,10 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
     catch (e) { setError(e.message); }
   }
   async function call(key) {
-    setError(""); setCalling(key);
+    setError(""); setCallNote(""); setCalling(key);
     try {
       await api("/dialer/call", { method: "POST", body: { loan_id: loan.id, which: key } });
+      setCallNote("Call requested. Smartflo rings your phone first, then connects the customer when you answer.");
       loadTimeline();
     } catch (e) { setError(e.message); } finally { setTimeout(() => setCalling(""), 4000); }
   }
@@ -108,6 +110,7 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
       {meta && <Outcome loan={loan} meta={meta} onSaved={updated} outcomePath={outcomePath} onDialer={onDialer} />}
       <Timeline items={timeline} />
       <Manual loan={loan} onSaved={updated} />
+      {callNote && !error && <p role="status" className="small">{callNote}</p>}
       {error && <p className="error" role="alert">{error}</p>}
     </aside>
   );
