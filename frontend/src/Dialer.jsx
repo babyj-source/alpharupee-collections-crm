@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, inr } from "./api.js";
+import { api, inr, num } from "./api.js";
 import Account from "./Account.jsx";
 
 const clock = (t) => new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
 
-// The agent's auto-dialer: sign in to Smartflo for a campaign, then Smartflo rings the next customer by itself.
+// The agent's auto-dialer: start a campaign, the CRM sends this agent's customers to Smartflo, and Smartflo rings them one by one.
 export default function Dialer() {
   const [status, setStatus] = useState(null);
   const [pools, setPools] = useState([]);
@@ -14,6 +14,7 @@ export default function Dialer() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [push, setPush] = useState(null); // result of the last send to Smartflo: {sent, total, error}
   const [open, setOpen] = useState(null);
   const shown = useRef(null); // id of the account the drawer was last opened for, so a new call opens it once
 
@@ -37,11 +38,17 @@ export default function Dialer() {
     e.preventDefault();
     setBusy(true); setError(""); setNotice("");
     try {
-      await api("/dialer/session/start", { method: "POST", body: { campaign, smartflo_password: password } });
+      const r = await api("/dialer/session/start", { method: "POST", body: { campaign, smartflo_password: password } });
       setPassword("");
+      setPush(r.push);
       shown.current = null;
       await refresh();
     } catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+  async function sendAgain() {
+    setError(""); setBusy(true);
+    try { setPush(await api("/dialer/session/push", { method: "POST" })); }
+    catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function stop() {
     setError("");
@@ -71,7 +78,7 @@ export default function Dialer() {
 
       {!s?.active && (
         <form className="card" onSubmit={start}>
-          <h2>Auto-dialer</h2>
+          <h2>Start a campaign</h2>
           {!status.enabled && <p className="error">The dialler is switched off on this server.</p>}
           {status.enabled && !status.agent_ready && <p className="error">Your Smartflo login is not set up yet. Ask the Admin to add it under Campaigns, Setup.</p>}
           {status.enabled && !status.in_window && <p className="error">Calling is only allowed between {status.window}.</p>}
@@ -79,15 +86,15 @@ export default function Dialer() {
           <label>Campaign
             <select value={campaign} onChange={(e) => setCampaign(e.target.value)} required>
               <option value="">Select…</option>
-              {startable.map((p) => <option key={p.key} value={p.key}>{p.label} · {p.eligible} customers waiting</option>)}
+              {startable.map((p) => <option key={p.key} value={p.key}>{p.label} · {p.mine} of your customers</option>)}
             </select>
           </label>
           {startable.length === 0 && <p className="muted small">No campaign is switched on yet.</p>}
           <label>Your Smartflo password
             <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </label>
-          <p className="muted small">Used once to sign you in to Smartflo. The CRM never stores it. After you start, Smartflo rings you and then dials each customer by itself; log an outcome after every call to get the next one.</p>
-          <button disabled={busy || !status.enabled || !status.agent_ready || !status.in_window}>{busy ? "Starting…" : "Start dialling"}</button>
+          <p className="muted small">Used once to sign you in to Smartflo. The CRM never stores it. When you start, your customers in this campaign are sent to Smartflo and it begins ringing them for you. Log an outcome after every call to get the next one.</p>
+          <button disabled={busy || !status.enabled || !status.agent_ready || !status.in_window}>{busy ? "Starting…" : "Start campaign"}</button>
         </form>
       )}
 
@@ -100,8 +107,14 @@ export default function Dialer() {
                 <span className="muted small">Smartflo signs you out around {clock(s.expires_at)}; start again then.</span>
               </div>
               <span className="grow" />
-              <button onClick={stop}>Stop dialling</button>
+              <button onClick={stop}>Stop campaign</button>
             </div>
+            {push && !push.error && (
+              <p role="status" className="small">{push.sent > 0 ? `${num(push.sent)} of your customers were sent to Smartflo.`
+                : push.total === 0 ? "You have no new customers in this campaign, so nothing was sent. Smartflo dials whoever is already in its list." : ""}</p>
+            )}
+            {push?.error && <p className="error" role="alert">Smartflo took {num(push.sent)} of {num(push.total)} customers. {push.error}</p>}
+            <div className="row"><button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button></div>
             {s.warning && <p className="error" role="alert">{s.warning}</p>}
             {s.unparsed_fields?.length > 0 && (
               <p className="muted small">Smartflo sent call details in a format the CRM does not recognise yet (fields: {s.unparsed_fields.join(", ")}). Tell the Admin.</p>

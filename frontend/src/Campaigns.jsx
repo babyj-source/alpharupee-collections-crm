@@ -1,87 +1,193 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, num } from "./api.js";
 
-const when = (t) => (t ? new Date(t).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Never");
+const hm = (t) => (t ? new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "");
 
+// The collection head's view of dialling: live monitoring and the campaigns themselves. Agents start campaigns from their own Dialer screen.
 export default function Campaigns({ user }) {
-  const [tab, setTab] = useState("pools");
+  const [tab, setTab] = useState("live");
   const admin = user.role === "admin";
   return (
     <div className="stack">
       <div className="row">
-        <button className={tab === "pools" ? "tab on" : "tab"} onClick={() => setTab("pools")}>Campaign pools</button>
+        <button className={tab === "live" ? "tab on" : "tab"} onClick={() => setTab("live")}>Live</button>
+        <button className={tab === "campaigns" ? "tab on" : "tab"} onClick={() => setTab("campaigns")}>Campaigns</button>
         {admin && <button className={tab === "setup" ? "tab on" : "tab"} onClick={() => setTab("setup")}>Setup</button>}
       </div>
-      {tab === "pools" && <Pools />}
+      {tab === "live" && <Live />}
+      {tab === "campaigns" && <CampaignList />}
       {tab === "setup" && admin && <Setup />}
     </div>
   );
 }
 
-function Pools() {
+const STATE = { on_call: ["On a call", "ok"], waiting: ["Waiting for a call", ""], idle: ["Screen idle", "today"] };
+
+function Live() {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let on = true;
+    const load = () => api("/dialer/live").then((r) => { if (on) { setD(r); setError(""); } }).catch((e) => on && setError(e.message));
+    load();
+    const t = setInterval(load, 6000);
+    return () => { on = false; clearInterval(t); };
+  }, []);
+  if (!d) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  return (
+    <>
+      {error && <p className="error" role="alert">{error}</p>}
+      {!d.enabled && <p className="card muted">The dialler is switched off on this server, so no one can start a campaign. Nothing below will move.</p>}
+      <p className="muted small">Updates every few seconds · last {hm(d.as_of)}. Agents start campaigns from their own Dialer screen, which sends their customers to Smartflo.</p>
+
+      <section className="card scroll">
+        <h2 style={{ padding: "0 10px" }}>Campaigns today</h2>
+        <table>
+          <thead><tr><th>Campaign</th><th>Status</th><th className="r">Waiting</th><th className="r">Sent to Smartflo</th><th className="r">Called</th><th className="r">Connected</th><th className="r">Promises</th><th className="r">Paid</th></tr></thead>
+          <tbody>
+            {d.campaigns.map((c) => (
+              <tr key={c.key}>
+                <td>{c.label}</td>
+                <td>{c.active ? <span className="chip ok">On</span> : <span className="chip">Paused</span>}</td>
+                <td className="r">{num(c.waiting)}</td><td className="r">{num(c.pushed_today)}</td><td className="r">{num(c.called)}</td>
+                <td className="r">{num(c.connected)}</td><td className="r">{num(c.promises)}</td><td className="r">{num(c.paid)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="muted small" style={{ padding: "0 10px" }}>Called, connected, promises and paid count the customers sent today who have an outcome logged today.</p>
+      </section>
+
+      <section className="card scroll">
+        <h2 style={{ padding: "0 10px" }}>Agents dialling now</h2>
+        <table>
+          <thead><tr><th>Agent</th><th>Campaign</th><th>State</th><th>On account</th><th>Started</th><th className="r">Outcomes today</th></tr></thead>
+          <tbody>
+            {d.agents.map((a, i) => (
+              <tr key={i}>
+                <td>{a.name}</td><td>{a.campaign}</td>
+                <td><span className={`chip ${STATE[a.state][1]}`}>{STATE[a.state][0]}</span></td>
+                <td>{a.account_id ? `${a.account_id} · ${a.borrower_name}` : "—"}</td>
+                <td>{hm(a.started_at)}</td><td className="r">{num(a.outcomes_today)}</td>
+              </tr>
+            ))}
+            {d.agents.length === 0 && <tr><td colSpan="6" className="muted">Nobody has started a campaign.</td></tr>}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="card scroll">
+        <h2 style={{ padding: "0 10px" }}>Latest outcomes</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Agent</th><th>Account</th><th>Customer</th><th>Outcome</th></tr></thead>
+          <tbody>
+            {d.feed.map((f, i) => (
+              <tr key={i}>
+                <td>{hm(f.at)}</td><td>{f.agent}</td><td>{f.account_id}</td><td>{f.borrower_name}</td>
+                <td><span className={`chip ${f.connected ? "ok" : ""}`}>{f.outcome}</span></td>
+              </tr>
+            ))}
+            {d.feed.length === 0 && <tr><td colSpan="5" className="muted">No outcomes logged yet today.</td></tr>}
+          </tbody>
+        </table>
+      </section>
+    </>
+  );
+}
+
+const BLANK = { label: "", dpd_min: "0", dpd_max: "", min_overdue: "0", product_code: "", hold_promises: true, hold_callbacks: true,
+  smartflo_campaign_id: "", smartflo_list_id: "", active: false };
+const digits = (v) => v.replace(/\D/g, "");
+
+function CampaignList() {
   const [d, setD] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [confirm, setConfirm] = useState(null); // {key, label, eligible, sample}
-  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState(null); // null = closed; {key?: ..., ...fields}
 
   const load = useCallback(() => api("/dialer/pools").then(setD).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
-  async function preview(p) {
+  const run = async (fn, ok) => {
     setError(""); setNotice("");
-    try { setConfirm({ ...p, ...(await api(`/dialer/pools/${p.key}/push`, { method: "POST", body: {} })) }); }
-    catch (e) { setError(e.message); }
-  }
-  async function push() {
-    setBusy(true); setError("");
-    try {
-      const r = await api(`/dialer/pools/${confirm.key}/push`, { method: "POST", body: { confirm: true } });
-      setNotice(`${num(r.sent)} customers pushed into “${confirm.label}”.`);
-      setConfirm(null);
-      load();
-    } catch (e) { setError(e.message); setConfirm(null); load(); } finally { setBusy(false); }
-  }
+    try { await fn(); setNotice(ok); setForm(null); await load(); } catch (e) { setError(e.message); }
+  };
+  const body = (f, custom) => ({
+    smartflo_campaign_id: f.smartflo_campaign_id, smartflo_list_id: f.smartflo_list_id, active: f.active,
+    ...(custom ? { label: f.label, rules: { dpd_min: f.dpd_min, dpd_max: f.dpd_max, min_overdue: f.min_overdue, product_code: f.product_code,
+      hold_promises: f.hold_promises, hold_callbacks: f.hold_callbacks } } : {}),
+  });
+  const edit = (c) => setForm({ key: c.key, custom: c.custom, label: c.label, ...(c.rules ? {
+    dpd_min: String(c.rules.dpd_min ?? 0), dpd_max: c.rules.dpd_max == null ? "" : String(c.rules.dpd_max), min_overdue: String(c.rules.min_overdue ?? 0),
+    product_code: c.rules.product_code || "", hold_promises: c.rules.hold_promises, hold_callbacks: c.rules.hold_callbacks } : {}),
+    smartflo_campaign_id: c.smartflo_campaign_id, smartflo_list_id: c.smartflo_list_id, active: c.active });
+  const toggle = (c) => run(() => api(`/dialer/campaigns/${c.key}`, { method: "PUT", body: { active: !c.active } }), `${c.label} ${c.active ? "paused" : "switched on"}.`);
+  const save = (e) => {
+    e.preventDefault();
+    if (form.key) return run(() => api(`/dialer/campaigns/${form.key}`, { method: "PUT", body: body(form, form.custom) }), `${form.label} saved.`);
+    return run(() => api("/dialer/campaigns", { method: "POST", body: body({ ...form }, true) }), `${form.label} created.`);
+  };
+  const remove = (c) => window.confirm(`Delete “${c.label}”?`) && run(() => api(`/dialer/campaigns/${c.key}`, { method: "DELETE" }), `${c.label} deleted.`);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
 
   if (!d) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
   return (
     <>
       {error && <p className="error" role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
-      {!d.enabled && <p className="card muted">The dialler is switched off on this server, so nothing can be pushed or dialled. The counts below are still live.</p>}
+      {!d.enabled && <p className="card muted">The dialler is switched off on this server. You can still set campaigns up.</p>}
 
-      {confirm && (
-        <section className="card" role="alertdialog" aria-label="Confirm push">
-          <h2>Push “{confirm.label}” to Smartflo?</h2>
-          <p><strong>{num(confirm.eligible)}</strong> customers will be added to the Smartflo lead list. Smartflo will start dialling them as soon as an agent is signed in to that campaign.</p>
-          {confirm.sample?.length > 0 && <p className="muted small">First accounts: {confirm.sample.map((s) => s.account_id).join(", ")}…</p>}
-          {!confirm.configured && <p className="error">Set this campaign's Smartflo ids first (Admin, Setup).</p>}
+      {form && (
+        <form className="card" onSubmit={save} aria-label="Campaign form">
+          <h2>{form.key ? `Edit ${form.label}` : "New campaign"}</h2>
+          {(!form.key || form.custom) ? (
+            <>
+              <label>Name<input value={form.label} onChange={set("label")} maxLength={60} required /></label>
+              <div className="row">
+                <label>Days past due from<input inputMode="numeric" value={form.dpd_min} onChange={(e) => setForm({ ...form, dpd_min: digits(e.target.value) })} /></label>
+                <label>to (blank = no limit)<input inputMode="numeric" value={form.dpd_max} onChange={(e) => setForm({ ...form, dpd_max: digits(e.target.value) })} /></label>
+                <label>Overdue at least (₹)<input inputMode="numeric" value={form.min_overdue} onChange={(e) => setForm({ ...form, min_overdue: digits(e.target.value) })} /></label>
+                <label>Product code (optional)<input value={form.product_code} onChange={set("product_code")} maxLength={40} /></label>
+              </div>
+              <label className="row"><input type="checkbox" checked={form.hold_promises} onChange={set("hold_promises")} /> Leave out customers with a promise still to come</label>
+              <label className="row"><input type="checkbox" checked={form.hold_callbacks} onChange={set("hold_callbacks")} /> Leave out customers with a call-back already booked</label>
+              <p className="muted small">Always left out: closed loans, paid, in dispute, nothing overdue, no valid mobile. A customer can be in more than one campaign if the rules overlap.</p>
+            </>
+          ) : <p className="muted small">This is a built-in campaign: its customers are chosen automatically. You can change its Smartflo ids and switch it on or off.</p>}
           <div className="row">
-            <button disabled={busy || !confirm.enabled || !confirm.configured || confirm.eligible === 0} onClick={push}>{busy ? "Pushing…" : "Yes, push them"}</button>
-            <button className="ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <label>Smartflo campaign id<input inputMode="numeric" value={form.smartflo_campaign_id} onChange={(e) => setForm({ ...form, smartflo_campaign_id: digits(e.target.value) })} /></label>
+            <label>Smartflo lead-list id<input inputMode="numeric" value={form.smartflo_list_id} onChange={(e) => setForm({ ...form, smartflo_list_id: digits(e.target.value) })} /></label>
           </div>
-        </section>
+          <label className="row"><input type="checkbox" checked={form.active} onChange={set("active")} /> Agents can start this campaign</label>
+          <p className="muted small">Create the campaign and its lead list in Smartflo first, then enter their ids. The lead list needs three columns in this order: Mobile, Name, Account ID.</p>
+          <div className="row"><button>{form.key ? "Save" : "Create campaign"}</button><button type="button" className="ghost" onClick={() => setForm(null)}>Cancel</button></div>
+        </form>
       )}
 
+      <div className="row"><span className="grow" /><button onClick={() => { setNotice(""); setForm({ ...BLANK }); }}>New campaign</button></div>
       <div className="card scroll">
         <table>
-          <thead><tr><th>Campaign</th><th className="r">Customers waiting</th><th>Smartflo ids</th><th>Agents can start</th><th>Last pushed</th><th /></tr></thead>
+          <thead><tr><th>Campaign</th><th className="r">Customers waiting</th><th>Smartflo ids</th><th>Agents can start</th><th /></tr></thead>
           <tbody>
-            {d.pools.map((p) => (
-              <tr key={p.key}>
-                <td>{p.label}</td><td className="r">{num(p.eligible)}</td>
-                <td>{p.configured ? <span className="chip ok">Set</span> : <span className="chip today">Not set</span>}</td>
-                <td>{p.active ? <span className="chip ok">Yes</span> : <span className="chip">No</span>}</td>
-                <td>{when(p.last_pushed_at)}{p.last_pushed_at ? ` · ${num(p.last_pushed_count)}` : ""}</td>
-                <td><button className="ghost" onClick={() => preview(p)}>Push to Smartflo…</button></td>
+            {d.pools.map((c) => (
+              <tr key={c.key}>
+                <td>{c.label}{c.custom && <span className="chip" style={{ marginLeft: 6 }}>Custom</span>}{c.summary && <div className="muted small" style={{ maxWidth: 340, whiteSpace: "normal" }}>{c.summary}</div>}</td>
+                <td className="r">{num(c.eligible)}</td>
+                <td>{c.configured ? <span className="chip ok">Set</span> : <span className="chip today">Not set</span>}</td>
+                <td>{c.active ? <span className="chip ok">Yes</span> : <span className="chip">Paused</span>}</td>
+                <td>
+                  <button className="ghost" onClick={() => toggle(c)}>{c.active ? "Pause" : "Switch on"}</button>{" "}
+                  <button className="ghost" onClick={() => edit(c)}>Edit</button>
+                  {c.custom && <>{" "}<button className="ghost" onClick={() => remove(c)}>Delete</button></>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <p className="muted small">
-        Pools never overlap. A call-back due today comes first, then a promise due or missed, then the days-past-due bucket. An account with a promise or call-back still to come
-        is held back so nobody is called twice. Only the borrower's main number is pushed; references are called by hand from the account screen. Push again whenever you want the lists refreshed.
+        Customers reach Smartflo when an agent starts a campaign: only the customers allocated to that agent are sent, and nobody is sent twice in a day.
+        The built-in campaigns never overlap: a call-back due comes first, then a promise due or missed, then the days-past-due bucket.
       </p>
     </>
   );
@@ -115,25 +221,6 @@ function Setup() {
           <button onClick={async () => setCheck(await api("/dialer/check", { method: "POST" }))}>Test connection</button>
           {check && <span className={check.ok ? "" : "error"}>{check.ok ? `Connected. Smartflo replied with: ${check.fields.join(", ") || "(empty)"}` : check.detail}</span>}
         </div>
-      </section>
-
-      <section className="card scroll">
-        <h2 style={{ padding: "0 10px" }}>Campaigns</h2>
-        <table>
-          <thead><tr><th>Campaign</th><th>Smartflo campaign id</th><th>Smartflo lead-list id</th><th>Agents can start</th><th /></tr></thead>
-          <tbody>
-            {d.campaigns.map((c, i) => (
-              <tr key={c.key}>
-                <td>{c.label}</td>
-                <td><input inputMode="numeric" value={c.smartflo_campaign_id} onChange={(e) => edit("campaigns", c.key, i, "smartflo_campaign_id", e.target.value.replace(/\D/g, ""))} aria-label={`${c.label} campaign id`} /></td>
-                <td><input inputMode="numeric" value={c.smartflo_list_id} onChange={(e) => edit("campaigns", c.key, i, "smartflo_list_id", e.target.value.replace(/\D/g, ""))} aria-label={`${c.label} lead list id`} /></td>
-                <td><input type="checkbox" checked={c.active} onChange={(e) => edit("campaigns", c.key, i, "active", e.target.checked)} aria-label={`${c.label} active`} /></td>
-                <td><button onClick={() => save(() => api(`/dialer/campaigns/${c.key}`, { method: "PUT", body: { smartflo_campaign_id: c.smartflo_campaign_id, smartflo_list_id: c.smartflo_list_id, active: c.active } }), `${c.label} saved.`)}>Save</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="muted small" style={{ padding: "0 10px" }}>Create the campaigns and lead lists in Smartflo first, then enter their ids here. The lead list needs three columns in this order: Mobile, Name, Account ID.</p>
       </section>
 
       <section className="card scroll">
