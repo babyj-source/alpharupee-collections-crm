@@ -12,8 +12,8 @@ What exists now, how to put it on UAT, and what is still assumed.
 | Roles | `head` sees everything, assigns accounts to agents, sees the dashboard by agent. `agent` sees only the accounts assigned to them. Every query goes through one scoping function; tests cover it. |
 | Portal | Head: dashboard (DPD buckets, overdue by agent, last sync), all accounts with filters and bulk assign. Agent: own summary and worklist, status and note per account. |
 | Phone numbers | The API only ever returns a masked number. "Show number" is a separate call, limited to the user's own accounts, rate limited, written to the audit log, hidden again after 20 seconds in the UI. |
-| LMS sync | Read-only, from `encorebootdb` only: the view `loan_od_account_view` (status, DPD, dues, balance, primary holder = lowest `holder_num`) and `customers` (phones and reference contacts). Runs every 15 minutes. LMS-owned columns are overwritten; CRM-owned columns (assignee, status, note) never are. Failures are recorded and shown to the head. |
-| Reference contacts | Up to two references per customer (name, relationship, number) from the customer master, shown under "Who to call" so an agent can call a reference when the borrower cannot be reached. Masked like the borrower's number; each reveal is logged with whose number it was (`borrower`, `alt`, `ref1`, `ref2`). Status "Reference contacted" exists for this. |
+| LMS sync | Read-only, from `encorebootdb` only: the view `loan_od_account_view` (status, DPD, dues, balance, primary holder = lowest `holder_num`) and `customers` (phones). Reference 1 comes from the loan account's UDF fields in the same view. Runs every 15 minutes. LMS-owned columns are overwritten; CRM-owned columns (assignee, status, note) never are. Failures are recorded and shown to the head. |
+| Reference contacts | Reference 1 from the loan account UDF fields in Encore (`udf_text2` name, `udf_text3` mobile, `udf_text4` relationship; the same for products MB01 to MB05), reference 2 and a fallback from the customer master,  shown under "Who to call" so an agent can call a reference when the borrower cannot be reached. Masked like the borrower's number; each reveal is logged with whose number it was (`borrower`, `alt`, `ref1`, `ref2`). Status "Reference contacted" exists for this. |
 | No Django admin | It would allow password-only sign-in and skip the OTP. Users are created from the server shell. |
 
 Not in this increment: campaigns (Smartflo), SMS and WhatsApp sends (MSG91), Push to Deal, CRIF. Those follow.
@@ -65,7 +65,7 @@ Not in this increment: campaigns (Smartflo), SMS and WhatsApp sends (MSG91), Pus
 
 ## Names, numbers and references
 
-Copied for **active loans only** (closed loans get no new contact details). Only these customer columns are read: `phone1`, `phone2`, `reference_name`, `reference_phone`, `reference_relationship_type` and the same three with suffix `2`. Date of birth, PAN, addresses, e-mail and documents are never selected; a test guards the column list.
+Copied for **active loans only** (closed loans get no new contact details). Reference 1 is read from the three account UDF columns `udf_text2`, `udf_text3`, `udf_text4` (confirmed against the LMS: names, 10-digit mobile, relationship; filled on about 99% of accounts). Only these customer columns are read: `phone1`, `phone2`, `reference_name`, `reference_phone`, `reference_relationship_type` and the same three with suffix `2`. Date of birth, PAN, addresses, e-mail and documents are never selected; a test guards the column list.
 
 After the first sync, check the numbers against what you expect. This prints counts only (no names, no numbers):
 
