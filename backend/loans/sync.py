@@ -48,15 +48,30 @@ def _full_name(row):
 
 
 def _contacts(account, customer):
-    """Name and numbers for one active loan. Reference fields come from the customer master."""
+    """Name and numbers for one active loan.
+
+    Reference 1 comes from the loan account's UDF fields in Encore (udf_text2 name, udf_text3 mobile,
+    udf_text4 relationship; same layout for every product, checked against the LMS). The customer master
+    is only a fallback for that slot and the source for reference 2."""
     c = customer or {}
+    ref1 = {
+        "name": _text(account.get("udf_text2"), 160),
+        "mobile": _digits(account.get("udf_text3")),
+        "relation": _text(account.get("udf_text4"), 60),
+    }
+    if not ref1["mobile"]:
+        ref1 = {
+            "name": _text(c.get("reference_name"), 160),
+            "mobile": _digits(c.get("reference_phone")),
+            "relation": _text(c.get("reference_relationship_type"), 60),
+        }
     return {
         "borrower_name": _full_name(account),
         "borrower_mobile": _digits(c.get("phone1")),
         "alt_mobile": _digits(c.get("phone2")),
-        "ref1_name": _text(c.get("reference_name"), 160),
-        "ref1_mobile": _digits(c.get("reference_phone")),
-        "ref1_relation": _text(c.get("reference_relationship_type"), 60),
+        "ref1_name": ref1["name"],
+        "ref1_mobile": ref1["mobile"],
+        "ref1_relation": ref1["relation"],
         "ref2_name": _text(c.get("reference_name2"), 160),
         "ref2_mobile": _digits(c.get("reference_phone2")),
         "ref2_relation": _text(c.get("reference_relationship_type2"), 60),

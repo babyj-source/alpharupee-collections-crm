@@ -23,13 +23,14 @@ class FakeReader:
         return iter(self._c)
 
 
-def acct(aid, dpd=0, demand=0, fee=0, status=0, holder=1, customer=None, first="Asha", last="Rao"):
+def acct(aid, dpd=0, demand=0, fee=0, status=0, holder=1, customer=None, first="Asha", last="Rao", udf=("", "", "")):
     return {
         "account_id": aid, "customer_id": customer or f"C{aid}", "holder_num": holder, "product_code": "PL",
         "branch_code": "B1", "operational_status": status, "dpd": dpd, "oldest_due_demand_date": date(2026, 9, 1),
         "last_repayment_date": date(2026, 8, 1), "total_demand_due_magnitude": demand, "total_fee_due_magnitude": fee,
         "balance_magnitude": -1000, "installment_amount_magnitude": 500,
         "first_name": first, "middle_name": None, "last_name": last,
+        "udf_text2": udf[0], "udf_text3": udf[1], "udf_text4": udf[2],
     }
 
 
@@ -61,6 +62,25 @@ class SyncTests(TestCase):
         loan.refresh_from_db()
         self.assertEqual(loan.dpd, 20)
         self.assertEqual((loan.crm_status, loan.note), ("promised", "calls on Friday"))
+
+    def test_reference_comes_from_the_account_udf_fields(self):
+        run_sync(FakeReader(
+            [acct("U1", udf=("Kamlesh Panchal", "9998637311", "Friend")),
+             acct("U2", udf=("", "", "")),                                  # no UDF: falls back to the customer master
+             acct("U3", udf=("Name Only", "not a number", "Friend")),       # unusable mobile: falls back as well
+             acct("U4", status=2, udf=("Closed Person", "9998637312", "Friend"))],
+            [cust("CU1", ref="Old Name", ref_phone="9333333333", ref2="Second", ref2_phone="9444444444", rel2="Cousin"),
+             cust("CU2", ref="Meena Rao", ref_phone="9333333334", rel="Sister"),
+             cust("CU3", ref="", ref_phone=""), cust("CU4")],
+        ))
+        u1 = Loan.objects.get(account_id="U1")
+        self.assertEqual((u1.ref1_name, u1.ref1_mobile, u1.ref1_relation), ("Kamlesh Panchal", "919998637311", "Friend"))
+        self.assertEqual((u1.ref2_name, u1.ref2_mobile), ("Second", "919444444444"))  # reference 2 still from the customer master
+        u2 = Loan.objects.get(account_id="U2")
+        self.assertEqual((u2.ref1_name, u2.ref1_mobile), ("Meena Rao", "919333333334"))
+        u3 = Loan.objects.get(account_id="U3")
+        self.assertEqual(u3.ref1_mobile, "")
+        self.assertEqual(Loan.objects.get(account_id="U4").ref1_mobile, "")  # closed loans get no contact details
 
     def test_primary_holder_is_lowest_holder_num(self):
         run_sync(FakeReader([acct("J1", holder=2, first="Second", customer="CB"), acct("J1", holder=1, first="First", customer="CA")],
@@ -101,6 +121,7 @@ class SyncTests(TestCase):
         from loans import lms
 
         text = (lms.ACCOUNT_COLUMNS + " " + lms.CUSTOMER_COLUMNS).lower()
+        self.assertIn("udf_text3", text)  # reference mobile
         for banned in ("pan", "date_of_birth", "address", "email", "document", "encorepaydb"):
             self.assertNotIn(banned, text)
 
