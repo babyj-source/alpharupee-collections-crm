@@ -76,16 +76,16 @@ class LoginView(APIView):
 
 def _start_otp(request, user):
     try:
-        otp.issue(user)
+        request_id = otp.issue(user)
     except otp.OtpRateLimited:
         return Response({"detail": "Too many codes requested. Try again in an hour."}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-    except otp.OtpDeliveryError:
-        audit(request, "otp_send_failed", user=user)
+    except otp.OtpDeliveryError as exc:
+        audit(request, "otp_send_failed", user=user, detail=str(exc))  # MSG91's own short reason, no number or code
         return Response({"detail": "Could not send the code. Contact the administrator."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     request.session.flush()  # fresh session for the pending login
     request.session[PENDING_KEY] = user.pk
     request.session[PENDING_AT] = timezone.now().timestamp()
-    audit(request, "otp_sent", user=user)
+    audit(request, "otp_sent", user=user, detail=f"msg91 request {request_id}" if request_id else "")
     return Response({"otp_required": True, "mobile_hint": user.masked_mobile, "expires_in": settings.OTP_TTL_SECONDS})
 
 
