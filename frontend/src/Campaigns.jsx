@@ -226,12 +226,12 @@ function Setup() {
       <section className="card scroll">
         <h2 style={{ padding: "0 10px" }}>Agents in Smartflo</h2>
         <table>
-          <thead><tr><th>CRM agent</th><th>Smartflo login e-mail</th><th>Smartflo agent number</th><th /></tr></thead>
+          <thead><tr><th>CRM agent</th><th>Smartflo login id</th><th>Smartflo agent number</th><th /></tr></thead>
           <tbody>
             {d.agents.map((a, i) => (
               <tr key={a.id}>
                 <td>{a.name}<div className="muted small">{a.email}</div></td>
-                <td><input type="email" value={a.smartflo_email} onChange={(e) => edit("agents", a.id, i, "smartflo_email", e.target.value)} aria-label={`${a.name} Smartflo e-mail`} /></td>
+                <td><input value={a.smartflo_email} autoComplete="off" onChange={(e) => edit("agents", a.id, i, "smartflo_email", e.target.value.replace(/\s/g, ""))} aria-label={`${a.name} Smartflo login id`} /></td>
                 <td><input inputMode="numeric" value={a.agent_number} onChange={(e) => edit("agents", a.id, i, "agent_number", e.target.value.replace(/\D/g, ""))} aria-label={`${a.name} agent number`} /></td>
                 <td><button onClick={() => save(() => api(`/dialer/agents/${a.id}`, { method: "PUT", body: { smartflo_email: a.smartflo_email, agent_number: a.agent_number } }), `${a.name} saved.`)}>Save</button></td>
               </tr>
@@ -239,7 +239,7 @@ function Setup() {
             {d.agents.length === 0 && <tr><td colSpan="4" className="muted">No active agents yet. Add them under Users and roles.</td></tr>}
           </tbody>
         </table>
-        <p className="muted small" style={{ padding: "0 10px" }}>The Smartflo password is never stored: each agent types it when they start dialling.</p>
+        <p className="muted small" style={{ padding: "0 10px" }}>The login id is what the agent types to sign in to Smartflo; the agent number is the one Smartflo rings for click-to-call (usually the same long number starting with 0). The Smartflo password is never stored: each agent types it when they start a campaign.</p>
       </section>
 
       <section className="card scroll">

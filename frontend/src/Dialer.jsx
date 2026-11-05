@@ -80,7 +80,7 @@ export default function Dialer() {
         <form className="card" onSubmit={start}>
           <h2>Start a campaign</h2>
           {!status.enabled && <p className="error">The dialler is switched off on this server.</p>}
-          {status.enabled && !status.agent_ready && <p className="error">Your Smartflo login is not set up yet. Ask the Admin to add it under Campaigns, Setup.</p>}
+          {status.enabled && !status.agent_ready && <p className="error">Your Smartflo login id is not set up yet. Ask the Admin to add it under Campaigns, Setup.</p>}
           {status.enabled && !status.in_window && <p className="error">Calling is only allowed between {status.window}.</p>}
           {s?.expired && <p className="muted">Your Smartflo session ran out (they last about an hour). Start again to keep calling.</p>}
           <label>Campaign

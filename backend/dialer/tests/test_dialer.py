@@ -343,6 +343,13 @@ class SetupTests(DialerBase):
         self.assertEqual((p.smartflo_email, p.agent_number), ("new@smartflo.test", "0606999"))
         self.assertEqual(self.put(f"agents/{self.a1.pk}", {"agent_number": "06 06"}).status_code, 400)
 
+    def test_smartflo_login_can_be_a_plain_id_not_only_an_email(self):
+        put = lambda body: self.api(self.admin).put(f"/api/dialer/agents/{self.a1.pk}", body, format="json")
+        self.assertEqual(put({"smartflo_email": "0607929520011", "agent_number": "0607929520011"}).status_code, 200)
+        self.assertEqual(put({"smartflo_email": "AR admin"}).status_code, 400)            # spaces would never match
+        self.assertEqual(self.start().status_code, 200)
+        self.assertEqual(self.fake.calls[0][:2], ("agent_login", "0607929520011"))        # the id is what is sent to Smartflo
+
     def test_check_connection(self):
         self.assertEqual(self.post(self.admin, "check").json(), {"ok": True, "fields": ["data", "success"]})
         self.fake.fail = {"probe": SmartfloError("Smartflo refused the request (401).")}

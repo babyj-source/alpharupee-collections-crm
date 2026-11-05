@@ -234,7 +234,10 @@ class DispositionMapView(APIView):
 
 
 class ProfileSerializer(serializers.Serializer):
-    smartflo_email = serializers.EmailField(allow_blank=True, required=False)
+    # Despite the name (kept so no migration is needed) this is the agent's Smartflo LOGIN ID: the vendor's own sample signs in with a
+    # plain id, not an e-mail address.
+    smartflo_email = serializers.RegexField(r"^\S*$", max_length=120, allow_blank=True, required=False,
+                                            error_messages={"invalid": "The login id cannot contain spaces."})
     agent_number = _digits_field(20)
 
 
@@ -307,7 +310,7 @@ class SessionStartView(APIView):
             return bad(f"Calling is only allowed between {CALL_START_HOUR:02d}:00 and {CALL_END_HOUR:02d}:00.")
         p = _profile(request.user)
         if not (p and p.smartflo_email):
-            return bad("Your Smartflo login is not set up yet. Ask the Admin to add it under Campaigns, Setup.")
+            return bad("Your Smartflo login id is not set up yet. Ask the Admin to add it under Campaigns, Setup.")
         camp = Campaign.objects.filter(key=d["campaign"]).first()
         if camp is None:
             return bad("Unknown campaign.")
@@ -327,7 +330,7 @@ class SessionStartView(APIView):
         except SmartfloError as exc:
             audit(request, "dialer_login_failed", user=request.user, detail=str(exc)[:200])
             if exc.status in (400, 401, 403, 422):
-                return bad("Smartflo did not accept that e-mail and password. " + str(exc).split(". ", 1)[-1][:120], 400)
+                return bad("Smartflo did not accept that login id and password. " + str(exc).split(". ", 1)[-1][:120], 400)
             return bad(str(exc), 502)
         try:
             client.session_create(token, camp.smartflo_campaign_id, camp.label)

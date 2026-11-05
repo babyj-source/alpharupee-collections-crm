@@ -26,3 +26,7 @@ Changes the Smartflo flow from increment 4 to match the agreed process.
 ## Tests
 
 142 backend tests pass (push on start, no repeats, partial failure and retry, rules, campaign create/edit/delete, live view). Frontend build and a browser check of Live, Campaigns and Dialer were done.
+
+## Update: Smartflo login id (not an e-mail)
+
+The vendor's own sample signs in with a plain login id (for example `AR_admin`), and an agent's login id looks like `0607929520011`. The Setup table now asks for the **Smartflo login id** (any text without spaces, no longer forced to be an e-mail address). For click-to-call the **agent number** is the number Smartflo rings first for that agent; it is normally the same long number starting with 0, not the outgoing (caller id) number and not the extension. After a click-to-call goes through, the account panel now says so.
