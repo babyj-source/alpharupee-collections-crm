@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "accounts",
     "loans",
     "dialer",
+    "messaging",
 ]
 # The Django admin is deliberately NOT installed: it signs in with a password only, which would
 # bypass the OTP step. Users are created with `manage.py create_crm_user`.
