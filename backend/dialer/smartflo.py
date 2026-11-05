@@ -35,11 +35,9 @@ class SmartfloClient:
     def __init__(self, http=None):
         self.http = http or requests
 
-    def _call(self, method, path, token, *, bearer=False, json=None, params=None):
-        if not settings.SMARTFLO_ENABLED:
-            raise SmartfloDisabled("The dialler is switched off on this server.")
-        if not token:
-            raise SmartfloError("No Smartflo token is set.")
+    _prefer = {}  # remembered header form per endpoint, so a fallback is only needed once
+
+    def _send(self, method, path, token, bearer, json, params):
         headers = {"accept": "application/json", "content-type": "application/json",
                    "Authorization": f"Bearer {token}" if bearer else token}
         try:
@@ -53,6 +51,31 @@ class SmartfloClient:
             return r.json()
         except ValueError:
             return {}
+
+    def _call(self, method, path, token, *, bearer=False, json=None, params=None):
+        """The vendor's examples send the token plain on some endpoints and as 'Bearer <token>' on others, and the document
+        does not cover every endpoint. If Smartflo rejects the TOKEN (not a wrong password), try the other form once and
+        remember which one worked."""
+        if not settings.SMARTFLO_ENABLED:
+            raise SmartfloDisabled("The dialler is switched off on this server.")
+        if not token:
+            raise SmartfloError("No Smartflo token is set.")
+        key = (method, re.sub(r"\d+", "#", path))
+        first = self._prefer.get(key, bearer)
+        try:
+            data = self._send(method, path, token, first, json, params)
+        except SmartfloError as exc:
+            if exc.status != 401 or "token" not in str(exc).lower():
+                raise
+            try:
+                data = self._send(method, path, token, not first, json, params)
+            except SmartfloError:
+                raise SmartfloError(str(exc) + " Tried the token with and without “Bearer”; check it is the right token and still valid.",
+                                    status=401)
+            self._prefer[key] = not first
+            return data
+        self._prefer[key] = first
+        return data
 
     # ---- account-level token (set on the server)
     def agent_login(self, email, password):
@@ -68,7 +91,7 @@ class SmartfloClient:
                           json={"data": rows, "duplicate_option": "overwrite"})
 
     def probe(self):
-        return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, params={"limit": 1})
+        return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, bearer=True, params={"limit": 1})  # the vendor's example uses Bearer here
 
     # ---- the agent's own token
     def session_create(self, token, campaign_id, name):

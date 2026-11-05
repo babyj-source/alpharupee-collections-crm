@@ -570,6 +570,48 @@ class ClientTests(Base):
         c.bulk_add_leads("174743", [{"field_0": "9"}])
         self.assertEqual((h.sent["url"].endswith("/v1/broadcast/lead/174743"), h.sent["json"]["duplicate_option"]), (True, "overwrite"))
 
+    class PickyHttp(Http):
+        """Rejects the token unless it arrives in the form `want` ('plain' or 'bearer')."""
+        def __init__(self, want, msg="Deleted or blacklisted token provided"):
+            super().__init__()
+            self.want, self.msg, self.n = want, msg, 0
+
+        def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+            self.n += 1
+            form = "bearer" if headers["Authorization"].startswith("Bearer ") else "plain"
+            self.status, self.body = (200, {"ok": 1}) if form == self.want else (401, {"message": self.msg})
+            return super().request(method, url, headers=headers, json=json, params=params, timeout=timeout)
+
+    @ON
+    def test_token_header_form_falls_back_and_is_remembered(self):
+        SmartfloClient._prefer.clear()
+        h = self.PickyHttp("plain")                 # the probe tries Bearer first, Smartflo wants it plain
+        c = SmartfloClient(h)
+        self.assertEqual(c.probe(), {"ok": 1})
+        self.assertEqual(h.n, 2)
+        c.probe()
+        self.assertEqual(h.n, 3)                    # remembered: one call, not two
+        SmartfloClient._prefer.clear()
+        h = self.PickyHttp("bearer")                # a plain-first endpoint where Smartflo wants Bearer
+        self.assertEqual(SmartfloClient(h).bulk_add_leads("1", [{"field_0": "9"}]), {"ok": 1})
+        SmartfloClient._prefer.clear()
+
+    @ON
+    def test_a_dead_token_is_reported_after_both_forms_and_a_wrong_password_is_not_retried(self):
+        SmartfloClient._prefer.clear()
+        h = self.PickyHttp("never")
+        with self.assertRaises(SmartfloError) as cm:
+            SmartfloClient(h).probe()
+        self.assertEqual((h.n, cm.exception.status), (2, 401))
+        self.assertIn("Deleted or blacklisted token", str(cm.exception))
+        self.assertIn("with and without", str(cm.exception))
+        self.assertNotIn("acct-token", str(cm.exception))
+        h = self.PickyHttp("never", msg="Invalid credentials")     # not a token problem: must not retry (login attempts are limited)
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(h).agent_login("a@b.test", "pw")
+        self.assertEqual(h.n, 1)
+        SmartfloClient._prefer.clear()
+
     @ON
     def test_errors_never_carry_secrets(self):
         c = SmartfloClient(self.Http(status=401, body={"message": "Too many login attempts have been made for this account."}))
