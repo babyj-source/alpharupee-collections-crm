@@ -1,0 +1,457 @@
+from datetime import timedelta
+from unittest import mock
+
+from django.test import override_settings
+from django.utils import timezone
+
+from accounts.models import AuditLog
+from dialer import views
+from dialer.models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap
+from dialer.pools import lead_rows, pool_loans
+from dialer.smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, last10, parse_live_calls
+from loans.models import Activity, CallAccess, Loan, Ptp
+from loans.tests.test_workflow import Base
+
+ON = override_settings(SMARTFLO_ENABLED=True, SMARTFLO_API_TOKEN="acct-token")
+
+
+class FakeSmartflo:
+    def __init__(self):
+        self.calls, self.live, self.fail = [], {"data": []}, {}
+
+    def _do(self, name, *args):
+        self.calls.append((name, *args))
+        if name in self.fail:
+            raise self.fail[name]
+        return {}
+
+    def agent_login(self, email, password):
+        self._do("agent_login", email)  # the password is deliberately not recorded
+        return "agent-token"
+
+    def bulk_add_leads(self, list_id, rows):
+        return self._do("bulk_add_leads", list_id, rows)
+
+    def probe(self):
+        self._do("probe")
+        return {"success": True, "data": []}
+
+    def session_create(self, token, campaign_id, name):
+        return self._do("session_create", token, campaign_id)
+
+    def session_call(self, token, campaign_id, start=True):
+        return self._do("session_call", token, campaign_id, start)
+
+    def logout(self, token, campaign_id):
+        return self._do("logout", token, campaign_id)
+
+    def disposition(self, token, unique_id, status_id):
+        return self._do("disposition", token, unique_id, status_id)
+
+    def live_calls(self, token, agent_number):
+        self._do("live_calls", agent_number)
+        return self.live
+
+    def click_to_call(self, token, agent_number, destination):
+        return self._do("click_to_call", token, agent_number, destination)
+
+    def names(self):
+        return [c[0] for c in self.calls]
+
+
+@ON
+class DialerBase(Base):
+    def setUp(self):
+        super().setUp()
+        self.admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
+        self.fake = FakeSmartflo()
+        for p in (mock.patch.object(views, "get_client", return_value=self.fake), mock.patch.object(views, "in_window", return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+        DialerProfile.objects.create(user=self.a1, smartflo_email="asha@smartflo.test", agent_number="0606000001")
+        DialerProfile.objects.create(user=self.a2, smartflo_email="ravi@smartflo.test", agent_number="0606000002")
+        Campaign.objects.filter(key="dpd1_7").update(smartflo_campaign_id="111", smartflo_list_id="222", active=True)
+
+    def post(self, user, path, body=None):
+        return self.api(user).post(f"/api/dialer/{path}", body or {}, format="json")
+
+    def start(self, user=None, campaign="dpd1_7"):
+        return self.post(user or self.a1, "session/start", {"campaign": campaign, "smartflo_password": "Sm@rtflo-pass"})
+
+    def live(self, number="9111111111", cid="c-1"):
+        self.fake.live = {"data": [{"call_id": cid, "customer_number": number, "status": "ringing"}]}
+
+
+class PoolTests(DialerBase):
+    def test_seeded_campaigns(self):
+        self.assertEqual(list(Campaign.objects.values_list("key", flat=True)), ["dpd0", "dpd1_7", "dpd8_15", "dpd16", "ptp", "callback"])
+        self.assertEqual(DispositionMap.objects.count(), 11)
+
+    def keys(self, key):
+        return sorted(pool_loans(key).values_list("account_id", flat=True))
+
+    def test_buckets_and_precedence(self):
+        self.assertEqual((self.keys("dpd1_7"), self.keys("dpd16"), self.keys("dpd0"), self.keys("ptp"), self.keys("callback")),
+                         (["L1"], ["L2"], [], [], []))       # L3 owes nothing, L4 is closed
+        Ptp.objects.create(loan=self.l1, agent=self.a1, promised_date=self.day(3), amount=100, reason="forgot")
+        self.assertEqual((self.keys("dpd1_7"), self.keys("ptp")), ([], []))   # a promise still to come: held back
+        Ptp.objects.filter(loan=self.l1).update(promised_date=self.day(0))
+        self.assertEqual((self.keys("dpd1_7"), self.keys("ptp")), ([], ["L1"]))  # due today: promise pool
+        Loan.objects.filter(pk=self.l1.pk).update(callback_at=timezone.now() - timedelta(minutes=5))
+        self.assertEqual((self.keys("ptp"), self.keys("callback")), ([], ["L1"]))  # a call-back beats a promise
+        Loan.objects.filter(pk=self.l1.pk).update(callback_at=timezone.now() + timedelta(days=2))
+        self.assertEqual((self.keys("ptp"), self.keys("callback"), self.keys("dpd1_7")), ([], [], []))  # future call-back: held
+
+    def test_paid_and_dispute_and_no_number_are_left_out(self):
+        Loan.objects.filter(pk=self.l2.pk).update(crm_status="dispute")
+        Loan.objects.filter(pk=self.l1.pk).update(borrower_mobile="")
+        self.assertEqual((self.keys("dpd16"), self.keys("dpd1_7")), ([], []))
+
+    def test_lead_rows(self):
+        rows = lead_rows(pool_loans("dpd1_7"))
+        self.assertEqual(rows, [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}])
+        Loan.objects.filter(pk=self.l1.pk).update(borrower_mobile="12345")
+        self.assertEqual(lead_rows(pool_loans("dpd1_7")), [])
+
+    def test_pool_counts_for_everyone(self):
+        r = self.api(self.a1).get("/api/dialer/pools").json()
+        self.assertTrue(r["enabled"])
+        by = {p["key"]: p for p in r["pools"]}
+        self.assertEqual((by["dpd1_7"]["eligible"], by["dpd16"]["eligible"], by["dpd1_7"]["configured"]), (1, 1, True))
+        self.assertNotIn("L1", str(r))  # counts only, no customers
+
+
+class PushTests(DialerBase):
+    def test_preview_changes_nothing_and_push_is_head_only(self):
+        r = self.post(self.head, "pools/dpd1_7/push", {}).json()
+        self.assertEqual((r["preview"], r["eligible"], r["sample"][0]["account_id"]), (True, 1, "L1"))
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.post(self.a1, "pools/dpd1_7/push", {"confirm": True}).status_code, 403)
+
+    def test_push_sends_rows_and_records_it(self):
+        r = self.post(self.head, "pools/dpd1_7/push", {"confirm": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.fake.calls[0][:2], ("bulk_add_leads", "222"))
+        self.assertEqual(self.fake.calls[0][2], [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}])
+        self.assertEqual(Campaign.objects.get(key="dpd1_7").last_pushed_count, 1)
+        self.assertTrue(CampaignPush.objects.filter(ok=True, leads=1).exists())
+        a = AuditLog.objects.get(action="campaign_pushed")
+        self.assertNotIn("9111111111", a.detail)
+
+    def test_push_needs_configuration_and_switch(self):
+        self.assertEqual(self.post(self.head, "pools/dpd16/push", {"confirm": True}).status_code, 400)  # no ids yet
+        with override_settings(SMARTFLO_ENABLED=False):
+            self.assertEqual(self.post(self.head, "pools/dpd1_7/push", {"confirm": True}).status_code, 400)
+        self.assertEqual(self.post(self.head, "pools/nope/push", {}).status_code, 404)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_chunks_and_partial_failure(self):
+        Campaign.objects.filter(key="dpd16").update(smartflo_campaign_id="1", smartflo_list_id="2")
+        self.fake.fail = {}
+        with mock.patch.object(views, "CHUNK", 1):
+            Loan.objects.filter(pk=self.l1.pk).update(dpd=40)  # now two accounts in dpd16
+            self.assertEqual(self.post(self.head, "pools/dpd16/push", {"confirm": True}).json()["sent"], 2)
+            self.assertEqual(self.fake.names().count("bulk_add_leads"), 2)
+            self.fake.calls.clear()
+            self.fake.fail = {"bulk_add_leads": SmartfloError("Smartflo refused the request (500).")}
+            r = self.post(self.head, "pools/dpd16/push", {"confirm": True})
+            self.assertEqual((r.status_code, r.json()["sent"]), (502, 0))
+            self.assertTrue(CampaignPush.objects.filter(ok=False, leads=0).exists())
+
+
+class SetupTests(DialerBase):
+    def test_admin_only(self):
+        for u in (self.head, self.a1):
+            self.assertEqual(self.api(u).get("/api/dialer/setup").status_code, 403)
+        r = self.api(self.admin).get("/api/dialer/setup").json()
+        self.assertEqual((r["status"], len(r["campaigns"]), len(r["dispositions"])), ({"enabled": True, "token_set": True}, 6, 11))
+        self.assertNotIn("acct-token", str(r))
+        self.assertEqual({a["name"] for a in r["agents"]}, {"Agent One", "Agent Two"})
+
+    def put(self, path, body):
+        return self.api(self.admin).put(f"/api/dialer/{path}", body, format="json")
+
+    def test_campaign_ids_and_activation(self):
+        self.assertEqual(self.put("campaigns/dpd0", {"active": True}).status_code, 400)  # no ids yet
+        self.assertEqual(self.put("campaigns/dpd0", {"smartflo_campaign_id": "12ab"}).status_code, 400)
+        self.assertEqual(self.put("campaigns/dpd0", {"smartflo_campaign_id": "390326", "smartflo_list_id": "259103", "active": True}).status_code, 200)
+        c = Campaign.objects.get(key="dpd0")
+        self.assertEqual((c.smartflo_campaign_id, c.smartflo_list_id, c.active, c.updated_by), ("390326", "259103", True, self.admin))
+        self.assertEqual(self.put("campaigns/zzz", {}).status_code, 404)
+
+    def test_disposition_map_and_agent_profile(self):
+        self.assertEqual(self.put("dispositions", {"map": {"ptp_given": "71296", "no_answer": ""}}).status_code, 200)
+        self.assertEqual(DispositionMap.objects.get(crm_code="ptp_given").smartflo_status_id, "71296")
+        self.assertEqual(self.put("dispositions", {"map": {"ptp_given": "abc"}}).status_code, 400)
+        self.assertEqual(self.put("dispositions", {"map": {"nonsense": "1"}}).status_code, 400)
+        self.assertEqual(self.put(f"agents/{self.a1.pk}", {"smartflo_email": "new@smartflo.test", "agent_number": "0606999"}).status_code, 200)
+        p = DialerProfile.objects.get(user=self.a1)
+        self.assertEqual((p.smartflo_email, p.agent_number), ("new@smartflo.test", "0606999"))
+        self.assertEqual(self.put(f"agents/{self.a1.pk}", {"agent_number": "06 06"}).status_code, 400)
+
+    def test_check_connection(self):
+        self.assertEqual(self.post(self.admin, "check").json(), {"ok": True, "fields": ["data", "success"]})
+        self.fake.fail = {"probe": SmartfloError("Smartflo refused the request (401).")}
+        self.assertFalse(self.post(self.admin, "check").json()["ok"])
+        self.assertEqual(self.post(self.head, "check").status_code, 403)
+
+
+class SessionTests(DialerBase):
+    def test_start_flow_and_secrets(self):
+        r = self.start()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.fake.names(), ["agent_login", "session_create", "session_call"])
+        self.assertEqual(self.fake.calls[0][1], "asha@smartflo.test")
+        self.assertEqual(self.fake.calls[1][1:], ("agent-token", "111"))
+        s = DialerSession.objects.get()
+        self.assertNotIn("agent-token", s.token_enc)
+        self.assertEqual(views.unseal(s.token_enc), "agent-token")
+        dump = str(list(AuditLog.objects.values())) + r.content.decode()
+        self.assertNotIn("Sm@rtflo-pass", dump)
+        self.assertNotIn("agent-token", dump)
+        self.assertTrue(AuditLog.objects.filter(action="dialer_started").exists())
+
+    def test_start_refusals(self):
+        self.assertEqual(self.start(campaign="dpd16").status_code, 400)                       # not switched on
+        self.assertEqual(self.post(self.a1, "session/start", {"campaign": "dpd1_7"}).status_code, 400)  # no password
+        self.assertEqual(self.post(self.a1, "session/start", {"campaign": "bad", "smartflo_password": "x"}).status_code, 400)
+        Loan.objects.update()  # no-op, keeps the intent obvious
+        u = type(self.head).objects.create_user("n@x.com", "pw", name="No Map", mobile="919000000010", role="agent")
+        self.assertEqual(self.start(u).status_code, 400)                                      # not mapped to Smartflo
+        with mock.patch.object(views, "in_window", return_value=False):
+            self.assertEqual(self.start().status_code, 400)
+        with override_settings(SMARTFLO_ENABLED=False):
+            self.assertEqual(self.start().status_code, 400)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(DialerSession.objects.count(), 0)
+
+    def test_wrong_smartflo_password_and_outage(self):
+        self.fake.fail = {"agent_login": SmartfloError("Smartflo refused the request (401). Invalid credentials", status=401)}
+        r = self.start()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("did not accept", r.json()["detail"])
+        self.fake.fail = {"agent_login": SmartfloError("Could not reach Smartflo.")}
+        self.assertEqual(self.start().status_code, 502)
+        self.fake.fail = {"session_call": SmartfloError("Smartflo refused the request (400). Agent is on a call.", status=400)}
+        self.assertEqual(self.start().status_code, 502)
+        self.assertEqual(DialerSession.objects.count(), 0)
+
+    def test_state_matches_the_call_to_the_account(self):
+        self.start()
+        self.assertEqual(self.api(self.a1).get("/api/dialer/session").json()["call"], None)
+        self.live("9111111111")
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual((d["active"], d["call"]["state"], d["awaiting_outcome"], d["current"]["account_id"]), (True, "ringing", True, "L1"))
+        self.assertNotIn("9111111111", str(d))   # masked
+        self.assertEqual(DialerSession.objects.get().last_unique_id, "c-1")
+        self.fake.live = {"data": []}             # call ended, outcome still owed
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual((d["call"], d["awaiting_outcome"], d["current"]["account_id"]), (None, True, "L1"))
+
+    def test_unknown_number_and_unparsed_shape(self):
+        self.start()
+        self.live("9000011111")
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual((d["call"]["state"], d["current"]), ("ringing", None))
+        self.fake.live = {"data": [{"weird": "x", "shape": "y"}]}
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual(d["unparsed_fields"], ["shape", "weird"])
+
+    def test_shared_pool_gives_temporary_access_only(self):
+        self.start(self.a2)
+        self.live("9111111111")                    # L1 belongs to Agent One
+        self.assertEqual(self.api(self.a2).get(f"/api/loans/{self.l1.pk}").status_code, 404)
+        d = self.api(self.a2).get("/api/dialer/session").json()
+        self.assertEqual(d["current"]["account_id"], "L1")
+        self.assertEqual(self.api(self.a2).get(f"/api/loans/{self.l1.pk}").status_code, 200)
+        self.assertEqual(self.api(self.a2).get(f"/api/loans/{self.l1.pk}/timeline").status_code, 200)
+        ids = [x["account_id"] for x in self.api(self.a2).get("/api/loans").json()["results"]]
+        self.assertEqual(ids, ["L2"])              # lists never include it
+        self.assertEqual(self.api(self.a2).get("/api/dashboard").json()["accounts"], 1)
+        CallAccess.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.api(self.a2).get(f"/api/loans/{self.l1.pk}").status_code, 404)
+
+    def test_outcome_saves_and_releases_the_agent(self):
+        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="555")
+        self.start()
+        self.live()
+        self.api(self.a1).get("/api/dialer/session")
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.json()["released"], r.json()["warning"], r.json()["loan"]["last_disposition"]), (True, "", "no_answer"))
+        self.assertEqual(self.fake.calls[-1], ("disposition", "agent-token", "c-1", "555"))
+        self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["awaiting_outcome"])
+
+    def test_outcome_without_mapping_or_on_error_keeps_the_crm_record(self):
+        self.start()
+        self.live()
+        self.api(self.a1).get("/api/dialer/session")
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"}).json()
+        self.assertFalse(r["released"])
+        self.assertIn("no Smartflo disposition", r["warning"])
+        self.assertEqual(Activity.objects.filter(loan=self.l1, kind="disposition").count(), 1)
+        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="555")
+        self.fake.fail = {"disposition": SmartfloError("Smartflo refused the request (500).")}
+        self.assertFalse(self.post(self.a1, "session/release", {"code": "no_answer"}).json()["released"])
+        self.fake.fail = {}
+        self.assertTrue(self.post(self.a1, "session/release", {"code": "no_answer"}).json()["released"])
+        self.assertEqual(Activity.objects.filter(loan=self.l1, kind="disposition").count(), 1)  # no double entry
+
+    def test_outcome_validation_errors_pass_through(self):
+        self.start()
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "call_back_later"})
+        self.assertEqual(r.status_code, 400)   # call-back needs a date
+        self.assertEqual(self.post(self.a1, f"session/outcome/{self.l2.pk}", {"code": "no_answer"}).status_code, 404)  # not theirs
+
+    def test_dismiss_and_stop(self):
+        self.start()
+        self.live()
+        self.api(self.a1).get("/api/dialer/session")
+        self.post(self.a1, "session/dismiss")
+        self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["awaiting_outcome"])
+        self.assertEqual(self.post(self.a1, "session/stop").json(), {"active": False})
+        self.assertEqual(self.fake.calls[-1][0], "logout")
+        self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["active"])
+        self.assertTrue(DialerSession.objects.get().ended_at)
+
+    def test_expired_token_ends_the_session(self):
+        self.start()
+        DialerSession.objects.update(token_expires_at=timezone.now() - timedelta(seconds=1))
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual((d["active"], d["expired"]), (False, True))
+
+    def test_new_start_closes_the_old_session(self):
+        self.start()
+        self.start()
+        self.assertEqual(DialerSession.objects.filter(ended_at__isnull=True).count(), 1)
+        self.assertIn("logout", self.fake.names())
+
+    def test_status_endpoint(self):
+        self.assertEqual(self.api(self.a1).get("/api/dialer/status").json(),
+                         {"enabled": True, "in_window": True, "window": "08:00-19:00", "agent_ready": True, "can_click_to_call": True})
+        self.assertTrue(self.api(self.head).get("/api/meta").json()["dialer_enabled"])
+
+
+class ClickToCallTests(DialerBase):
+    def call(self, user=None, loan=None, which="borrower"):
+        return self.post(user or self.a1, "call", {"loan_id": (loan or self.l1).pk, "which": which})
+
+    def test_places_the_call_and_logs_without_the_number(self):
+        r = self.call()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.fake.calls[-1], ("click_to_call", "acct-token", "0606000001", "9111111111"))
+        act = Activity.objects.filter(loan=self.l1, kind="call").get()
+        self.assertEqual(act.detail, "Call placed to borrower")
+        self.assertNotIn("9111111111", act.detail + AuditLog.objects.get(action="call_placed").detail)
+        self.assertNotIn("9111111111", r.content.decode())
+
+    def test_uses_the_agents_token_during_a_session(self):
+        self.start()
+        self.call()
+        self.assertEqual(self.fake.calls[-1][1], "agent-token")
+
+    def test_reference_numbers_and_overrides(self):
+        self.assertEqual(self.call(which="ref1").status_code, 200)
+        self.assertEqual(self.fake.calls[-1][3], "9333333333")
+        self.assertEqual(self.call(which="ref2").status_code, 400)   # no second reference
+
+    def test_refusals(self):
+        self.assertEqual(self.call(self.a2).status_code, 404)        # not their account
+        self.assertEqual(self.call(loan=self.l4, user=self.head).status_code, 400)  # closed
+        with mock.patch.object(views, "in_window", return_value=False):
+            self.assertEqual(self.call().status_code, 400)
+        DialerProfile.objects.filter(user=self.a1).update(agent_number="")
+        self.assertEqual(self.call().status_code, 400)
+        with override_settings(SMARTFLO_ENABLED=False):
+            DialerProfile.objects.filter(user=self.a1).update(agent_number="1")
+            self.assertEqual(self.call().status_code, 400)
+        self.assertEqual(self.post(self.a1, "call", {"loan_id": self.l1.pk, "which": "mum"}).status_code, 400)
+        self.assertNotIn("click_to_call", self.fake.names())
+
+    def test_smartflo_error_is_reported_and_not_logged_as_a_call(self):
+        self.fake.fail = {"click_to_call": SmartfloError("Smartflo refused the request (400). Agent is not logged in.", status=400)}
+        r = self.call()
+        self.assertEqual(r.status_code, 502)
+        self.assertFalse(Activity.objects.filter(kind="call").exists())
+
+
+class ClientTests(Base):
+    class Http:
+        def __init__(self, status=200, body=None):
+            self.status, self.body, self.sent = status, body if body is not None else {}, None
+
+        def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+            self.sent = dict(method=method, url=url, headers=headers, json=json, params=params, timeout=timeout)
+            http = self
+
+            class R:
+                status_code = http.status
+
+                def json(self):
+                    if http.body == "html":
+                        raise ValueError
+                    return http.body
+            return R()
+
+    @ON
+    def test_requests_follow_the_vendor_examples(self):
+        h = self.Http(body={"access_token": "T1"})
+        c = SmartfloClient(h)
+        self.assertEqual(c.agent_login("a@b.test", "pw"), "T1")
+        self.assertEqual((h.sent["method"], h.sent["url"], h.sent["headers"]["Authorization"]),
+                         ("POST", "https://api-smartflo.tatateleservices.com/v1/auth/login", "acct-token"))
+        self.assertEqual(h.sent["json"], {"email": "a@b.test", "password": "pw"})
+        c.session_create("T1", "390326", "Test")
+        self.assertEqual((h.sent["headers"]["Authorization"], h.sent["json"]), ("Bearer T1", {"campaign_id": 390326, "campaign_name": "Test"}))
+        c.session_call("T1", "390326", start=True)
+        self.assertEqual(h.sent["json"], {"startOrEnd": True, "campaignId": "390326", "logout": False})
+        c.logout("T1", "390326")
+        self.assertEqual((h.sent["url"].endswith("/v1/dialer/logout"), h.sent["json"]), (True, {"campaign_id": "390326"}))
+        c.disposition("T1", "u-1", 153899)
+        self.assertEqual((h.sent["headers"]["Authorization"], h.sent["json"]), ("T1", {"disposition_status": "153899", "unique_id": "u-1"}))
+        c.live_calls("T1", "0606")
+        self.assertEqual((h.sent["method"], h.sent["params"]), ("GET", {"agent_number": "0606"}))
+        c.click_to_call("T1", "0606", "9876543210")
+        self.assertEqual(h.sent["json"], {"async": 1, "agent_number": "0606", "destination_number": "9876543210", "type": "dialer"})
+        c.bulk_add_leads("174743", [{"field_0": "9"}])
+        self.assertEqual((h.sent["url"].endswith("/v1/broadcast/lead/174743"), h.sent["json"]["duplicate_option"]), (True, "overwrite"))
+
+    @ON
+    def test_errors_never_carry_secrets(self):
+        c = SmartfloClient(self.Http(status=401, body={"message": "Too many login attempts have been made for this account."}))
+        with self.assertRaises(SmartfloError) as cm:
+            c.agent_login("a@b.test", "secret-pw")
+        self.assertEqual(cm.exception.status, 401)
+        self.assertIn("Too many login attempts", str(cm.exception))
+        self.assertNotIn("secret-pw", str(cm.exception))
+        self.assertNotIn("acct-token", str(cm.exception))
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(self.Http(body={})).agent_login("a@b.test", "pw")      # no token in the reply
+        self.assertEqual(SmartfloClient(self.Http(body="html")).probe(), {})
+
+    @override_settings(SMARTFLO_ENABLED=False, SMARTFLO_API_TOKEN="x")
+    def test_off_switch_blocks_every_call(self):
+        h = self.Http()
+        with self.assertRaises(SmartfloDisabled):
+            SmartfloClient(h).probe()
+        self.assertIsNone(h.sent)
+
+    @override_settings(SMARTFLO_ENABLED=True, SMARTFLO_API_TOKEN="")
+    def test_no_token_no_call(self):
+        h = self.Http()
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(h).probe()
+        self.assertIsNone(h.sent)
+
+    def test_parse_live_calls(self):
+        one = {"call_id": "c1", "customer_number": "+91 98765-43210", "status": "answered"}
+        self.assertEqual(parse_live_calls([one])[0], [{"id": "c1", "number": "9876543210", "state": "answered"}])
+        self.assertEqual(parse_live_calls({"data": [one]})[0][0]["id"], "c1")
+        self.assertEqual(parse_live_calls({"data": {"calls": [one]}})[0][0]["number"], "9876543210")
+        self.assertEqual(parse_live_calls({"results": [{"uuid": "u", "destination": "9876543210"}]})[0][0]["id"], "u")
+        self.assertEqual(parse_live_calls({"data": []}), ([], []))
+        self.assertEqual(parse_live_calls({"success": True}), ([], []))
+        calls, unparsed = parse_live_calls([{"foo": 1, "bar": "9876543210"}])
+        self.assertEqual((calls, unparsed), ([], ["bar", "foo"]))
+        self.assertEqual(last10("0091 98765 43210"), "9876543210")
+        self.assertEqual(last10("123"), "")
