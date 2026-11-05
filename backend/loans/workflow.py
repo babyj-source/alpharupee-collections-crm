@@ -2,6 +2,10 @@
 from .models import CrmStatus
 
 PTP_MAX_DAYS = 7  # a promise may be at most a week out (prototype rule)
+CALL_START_HOUR, CALL_END_HOUR = 8, 19  # calling window 08:00-19:00 (prototype rule); call-backs must fall inside it
+CALLBACK_STEP_MINUTES = 30
+# After these outcomes the borrower was not reached, so a pending call-back stays; any other outcome closes it.
+KEEP_CALLBACK = {"no_answer", "not_reachable", "call_back_later"}
 
 # code -> (label, group, CRM status it sets). Groups are the ones used in the prototype's disposition MIS.
 DISPOSITIONS = {

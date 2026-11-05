@@ -88,9 +88,10 @@ class DispositionTests(Base):
 
     def test_other_outcomes_map_to_statuses(self):
         for code, status in [("no_answer", "not_reachable"), ("dispute", "dispute"), ("reference_contacted", "reference_contacted"),
-                             ("refuses", "contacted"), ("call_back_later", "contacted")]:
+                             ("refuses", "contacted")]:
             self.assertEqual(self.post(self.a1, self.l1, code=code).json()["crm_status"], status)
         self.assertEqual(self.post(self.a1, self.l1, code="nonsense").status_code, 400)
+        self.assertEqual(self.post(self.a1, self.l1, code="call_back_later", callback_date=str(self.day(1)), callback_time="11:00").json()["crm_status"], "contacted")
 
     def test_closed_account_is_refused_and_audit_has_no_note_text(self):
         Loan.objects.filter(pk=self.l4.pk).update(assigned_agent=self.a1)
@@ -113,6 +114,75 @@ class MetaTests(Base):
         self.assertEqual(d["today"], str(self.day(0)))
         self.assertIn("ptp_given", [x["code"] for x in d["dispositions"]])
         self.assertIn("salary_delayed", [x["code"] for x in d["ptp_reasons"]])
+
+
+class CallbackTests(Base):
+    def post(self, user, loan, **body):
+        return self.api(user).post(f"/api/loans/{loan.pk}/disposition", {"code": "call_back_later", **body}, format="json")
+
+    def future_slot(self):
+        """A valid slot: tomorrow at 11:00 (always inside the calling window and in the future)."""
+        return {"callback_date": str(self.day(1)), "callback_time": "11:00"}
+
+    def test_needs_date_and_time(self):
+        self.assertEqual(self.post(self.a1, self.l1).status_code, 400)
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(1))).status_code, 400)
+        self.assertEqual(self.post(self.a1, self.l1, callback_time="11:00").status_code, 400)
+        self.assertIsNone(Loan.objects.get(pk=self.l1.pk).callback_at)
+
+    def test_saved_with_date_and_time_and_shown_in_timeline(self):
+        r = self.post(self.a1, self.l1, **self.future_slot(), note="at office now")
+        self.assertEqual(r.status_code, 200, r.content)
+        loan = Loan.objects.get(pk=self.l1.pk)
+        local = timezone.localtime(loan.callback_at)
+        self.assertEqual((local.date(), local.strftime("%H:%M")), (self.day(1), "11:00"))
+        self.assertEqual(r.json()["last_disposition"], "call_back_later")
+        tl = self.api(self.a1).get(f"/api/loans/{self.l1.pk}/timeline").json()
+        self.assertIn("at 11:00", tl[0]["detail"])
+        self.assertIn("at office now", tl[0]["detail"])
+
+    def test_rules(self):
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(1)), callback_time="07:30").status_code, 400)  # too early
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(1)), callback_time="19:00").status_code, 400)  # window closed
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(-1)), callback_time="11:00").status_code, 400)  # past
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(8)), callback_time="11:00").status_code, 400)  # too far
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(1)), callback_time="9am").status_code, 400)
+        self.assertEqual(self.post(self.a1, self.l1, callback_date=str(self.day(7)), callback_time="08:00").status_code, 200)
+        self.assertEqual(self.post(self.a1, self.l3, **self.future_slot()).status_code, 404)  # not theirs
+
+    def test_later_outcomes_keep_or_clear_it(self):
+        self.post(self.a1, self.l1, **self.future_slot())
+        for code in ("no_answer", "not_reachable"):  # borrower still not reached: call-back stays
+            self.api(self.a1).post(f"/api/loans/{self.l1.pk}/disposition", {"code": code}, format="json")
+            self.assertIsNotNone(Loan.objects.get(pk=self.l1.pk).callback_at)
+        self.api(self.a1).post(f"/api/loans/{self.l1.pk}/disposition", {"code": "refuses"}, format="json")
+        self.assertIsNone(Loan.objects.get(pk=self.l1.pk).callback_at)  # reached: handled
+
+    def test_list_scope_states_and_clear(self):
+        slot = self.future_slot()
+        self.post(self.a1, self.l1, **slot)
+        self.post(self.head, self.l2, **slot)
+        Loan.objects.filter(pk=self.l2.pk).update(callback_at=timezone.now() - timedelta(minutes=5))  # now overdue
+        mine = self.api(self.a1).get("/api/callbacks").json()["results"]
+        self.assertEqual([c["account_id"] for c in mine], ["L1"])
+        self.assertEqual(mine[0]["state"], "upcoming")
+        allc = self.api(self.head).get("/api/callbacks").json()["results"]
+        self.assertEqual([(c["account_id"], c["state"]) for c in allc], [("L2", "due"), ("L1", "upcoming")])
+        self.assertEqual(len(self.api(self.head).get("/api/callbacks?state=due").json()["results"]), 1)
+        self.assertEqual(self.api(self.head).get("/api/callbacks?state=bogus").status_code, 400)
+        d = self.api(self.head).get("/api/dashboard").json()
+        self.assertEqual(d["callbacks"]["due"], 1)
+        # clear
+        self.assertEqual(self.api(self.a1).delete(f"/api/loans/{self.l2.pk}/callback").status_code, 404)
+        r = self.api(self.a1).delete(f"/api/loans/{self.l1.pk}/callback")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["callback_at"])
+        self.assertEqual(self.api(self.a1).delete(f"/api/loans/{self.l1.pk}/callback").status_code, 400)
+
+    def test_meta_has_the_window(self):
+        d = self.api(self.a1).get("/api/meta").json()
+        self.assertEqual((d["call_start"], d["call_end"], d["callback_step_minutes"]), ("08:00", "19:00", 30))
+        self.assertRegex(d["now"], r"^\d\d:\d\d$")
 
 
 class PtpTests(Base):

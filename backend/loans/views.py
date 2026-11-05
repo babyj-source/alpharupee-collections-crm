@@ -18,10 +18,12 @@ from .models import ACTIVE_Q, Activity, AllocationBatch, Loan, Ptp, ReferenceCon
 from .pagination import Page
 from .phones import normalise_mobile
 from .serializers import (
-    ActivitySerializer, AssignSerializer, DispositionSerializer, LoanSerializer, LoanUpdateSerializer,
+    ActivitySerializer, AssignSerializer, CallbackSerializer, DispositionSerializer, LoanSerializer, LoanUpdateSerializer,
     PtpCloseSerializer, PtpSerializer, ReferenceSerializer, RevealSerializer, open_ptp,
 )
-from .workflow import DISPOSITIONS, DISPOSITION_LABELS, PTP_MAX_DAYS, PTP_REASONS
+from .workflow import (
+    CALL_END_HOUR, CALL_START_HOUR, CALLBACK_STEP_MINUTES, DISPOSITIONS, DISPOSITION_LABELS, KEEP_CALLBACK, PTP_MAX_DAYS, PTP_REASONS,
+)
 
 OVERDUE = ExpressionWrapper(F("demand_due") + F("fee_due"), output_field=DecimalField(max_digits=16, decimal_places=2))
 
@@ -160,7 +162,12 @@ class DashboardView(APIView):
         def ptp_sum(q):
             agg = q.aggregate(n=Count("id"), amount=Sum("amount"))
             return {"count": agg["n"], "amount": agg["amount"] or 0}
+        pending = qs.filter(callback_at__isnull=False)
         out = {
+            "callbacks": {
+                "due": pending.filter(callback_at__lte=timezone.now()).count(),
+                "today": pending.filter(callback_at__date=today).count(),
+            },
             "ptp": {
                 "open": ptp_sum(open_ptps),
                 "today": ptp_sum(open_ptps.filter(promised_date=today)),
@@ -218,8 +225,13 @@ class DispositionView(APIView):
             Ptp.objects.filter(loan=loan, status=Ptp.State.OPEN).update(status=Ptp.State.KEPT, closed_at=now)
         if loan.crm_status != new_status:
             loan.status_changed_at = now
+        if d["code"] == "call_back_later":
+            loan.callback_at = d["callback_at"]
+            detail = (f"Call back on {timezone.localtime(loan.callback_at):%d %b %Y at %H:%M}. " + d["note"]).strip()
+        elif d["code"] not in KEEP_CALLBACK:
+            loan.callback_at = None  # the borrower was reached, so the pending call-back is handled
         loan.crm_status, loan.last_disposition, loan.last_disposition_at = new_status, d["code"], now
-        loan.save(update_fields=["crm_status", "status_changed_at", "last_disposition", "last_disposition_at"])
+        loan.save(update_fields=["crm_status", "status_changed_at", "last_disposition", "last_disposition_at", "callback_at"])
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.DISPOSITION,
                                 disposition=d["code"], detail=detail[:300])
         audit(request, "disposition_saved", user=request.user, object_type="loan", object_id=loan.pk, detail=d["code"])
@@ -317,8 +329,8 @@ class ReferenceView(APIView):
 
 EXPORT_HEAD = [
     "Account ID", "Borrower", "Mobile (masked)", "Product", "Branch", "Status in LMS", "DPD", "Bucket",
-    "Overdue (INR)", "Outstanding (INR)", "Oldest due date", "Last payment date", "CRM status", "Last call outcome",
-    "Last call outcome at", "Open promise date", "Open promise amount (INR)", "Assigned agent", "Agent e-mail",
+    "Overdue (INR)", "Outstanding principal (INR)", "Oldest due date", "Last payment date", "CRM status", "Last call outcome",
+    "Last call outcome at", "Call back at", "Open promise date", "Open promise amount (INR)", "Assigned agent", "Agent e-mail",
 ]
 
 
@@ -354,6 +366,7 @@ class ExportView(APIView):
                 l.outstanding, l.oldest_due_date or "", l.last_repayment_date or "", l.get_crm_status_display(),
                 DISPOSITION_LABELS.get(l.last_disposition, ""),
                 timezone.localtime(l.last_disposition_at).strftime("%Y-%m-%d %H:%M") if l.last_disposition_at else "",
+                timezone.localtime(l.callback_at).strftime("%Y-%m-%d %H:%M") if l.callback_at else "",
                 p.promised_date if p else "", p.amount if p else "",
                 safe_cell(a.name) if a else "", safe_cell(a.email) if a else "",
             ])
@@ -369,7 +382,46 @@ class MetaView(APIView):
 
         return Response({
             "today": timezone.localdate(),
+            "now": timezone.localtime().strftime("%H:%M"),
             "ptp_max_days": PTP_MAX_DAYS,
+            "call_start": f"{CALL_START_HOUR:02d}:00",
+            "call_end": f"{CALL_END_HOUR:02d}:00",
+            "callback_step_minutes": CALLBACK_STEP_MINUTES,
             "dispositions": [{"code": k, "label": v[0], "group": v[1]} for k, v in DISPOSITIONS.items()],
             "ptp_reasons": [{"code": k, "label": v} for k, v in PTP_REASONS.items()],
         })
+
+
+class CallbackListView(APIView):
+    """Agreed call-backs on the user's accounts. state: pending (default), due, today, upcoming."""
+
+    def get(self, request):
+        now = timezone.now()
+        qs = scoped(request.user).filter(callback_at__isnull=False)
+        state = request.query_params.get("state", "pending")
+        if state == "due":
+            qs = qs.filter(callback_at__lte=now)
+        elif state == "today":
+            qs = qs.filter(callback_at__date=timezone.localdate())
+        elif state == "upcoming":
+            qs = qs.filter(callback_at__gt=now).exclude(callback_at__date=timezone.localdate())
+        elif state != "pending":
+            raise drf_serializers.ValidationError({"state": "Unknown state."})
+        qs = qs.order_by("callback_at", "id")
+        page = Page()
+        rows = page.paginate_queryset(qs, request)
+        return page.get_paginated_response(CallbackSerializer(rows, many=True).data)
+
+
+class CallbackClearView(APIView):
+    """Mark a call-back as handled without logging a new outcome."""
+
+    @transaction.atomic
+    def delete(self, request, pk):
+        loan = get_object_or_404(scoped(request.user), pk=pk)
+        if loan.callback_at is None:
+            return Response({"detail": "No call-back is pending on this account."}, status=400)
+        Loan.objects.filter(pk=loan.pk).update(callback_at=None)
+        Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.NOTE, detail="Call-back marked done")
+        audit(request, "callback_cleared", user=request.user, object_type="loan", object_id=loan.pk)
+        return Response(LoanSerializer(get_object_or_404(scoped(request.user), pk=pk)).data)
