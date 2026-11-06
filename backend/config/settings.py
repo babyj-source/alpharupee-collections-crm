@@ -126,6 +126,12 @@ SMARTFLO_ENABLED = env_bool("SMARTFLO_ENABLED", False)
 SMARTFLO_API_TOKEN = env("SMARTFLO_API_TOKEN", "")  # long-lived account token; never sent to the browser
 SMARTFLO_API_BASE = env("SMARTFLO_API_BASE", "https://api-smartflo.tatateleservices.com")
 SMARTFLO_TIMEOUT_SECONDS = int(env("SMARTFLO_TIMEOUT_SECONDS", "10"))
+# "type" sent with click-to-call. "dialer" ties the call to the agent's running campaign session and Smartflo answers
+# "No agent session details were found" without one, so it is left out by default (a plain click-to-call).
+SMARTFLO_CLICK_TO_CALL_TYPE = env("SMARTFLO_CLICK_TO_CALL_TYPE", "")
+# The number the customer sees (Smartflo's "caller_id", the account's outgoing number) and how long Smartflo waits for the agent, in seconds.
+SMARTFLO_CALLER_ID = env("SMARTFLO_CALLER_ID", "")
+SMARTFLO_CALL_TIMEOUT = int(env("SMARTFLO_CALL_TIMEOUT", "300"))
 
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")

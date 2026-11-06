@@ -573,13 +573,22 @@ class ClientTests(Base):
         c.live_calls("T1", "0606")
         self.assertEqual((h.sent["method"], h.sent["params"]), ("GET", {"agent_number": "0606"}))
         c.click_to_call("T1", "0606", "9876543210")
-        self.assertEqual(h.sent["json"], {"async": 1, "agent_number": "0606", "destination_number": "9876543210", "type": "dialer"})
+        self.assertEqual(h.sent["json"], {"async": 1, "agent_number": "0606", "destination_number": "9876543210"})   # plain click-to-call
+        with override_settings(SMARTFLO_CALLER_ID="1600322818"):
+            c.click_to_call("T1", "0606", "9876543210")
+        self.assertEqual(h.sent["json"], {"agent_number": "0606", "destination_number": "9876543210", "caller_id": "1600322818",
+                                          "async": 1, "call_timeout": 300})                     # the same body as Smartflo's example
+        self.assertEqual(h.sent["headers"]["Authorization"], "T1")                              # token sent plain, not as Bearer
+        with override_settings(SMARTFLO_CLICK_TO_CALL_TYPE="dialer"):
+            c.click_to_call("T1", "0606", "9876543210")
+        self.assertEqual(h.sent["json"]["type"], "dialer")
         c.bulk_add_leads("174743", [{"field_0": "9"}])
         self.assertEqual((h.sent["url"].endswith("/v1/broadcast/lead/174743"), h.sent["json"]["duplicate_option"]), (True, "overwrite"))
 
     @ON
     def test_click_to_call_200_with_a_failure_body_is_an_error_not_a_success(self):
-        for body in ({"success": False, "message": "Agent is not logged in"}, {"status": "failed", "message": "Agent is not logged in"}):
+        for body in ({"success": False, "message": "Agent is not logged in"}, {"status": "failed", "message": "Agent is not logged in"},
+                     {"message": "Agent is not logged in"}):
             with self.assertRaisesMessage(SmartfloError, "Agent is not logged in"):
                 SmartfloClient(self.Http(body=body)).click_to_call("T1", "0606", "9876543210")
         ok = SmartfloClient(self.Http(body={"success": True, "message": "call queued", "data": {"customer": "9876543210"}}))
@@ -587,6 +596,14 @@ class ClientTests(Base):
             self.assertTrue(ok.click_to_call("T1", "0606", "9876543210")["success"])
         self.assertIn("call queued", cm.output[0])
         self.assertNotIn("9876543210", cm.output[0])       # the number never reaches the log
+
+    @ON
+    def test_session_missing_reply_is_shown_to_the_agent(self):
+        h = self.Http(body={"message": "No agent session details were found, please check."})
+        with self.assertRaisesMessage(SmartfloError, "No agent session details were found"):
+            SmartfloClient(h).click_to_call("T1", "0606", "9876543210")
+        ok = self.Http(body={"message": "Call originated"})            # a plain success message is not mistaken for a refusal
+        self.assertEqual(SmartfloClient(ok).click_to_call("T1", "0606", "9876543210"), {"message": "Call originated"})
 
     class PickyHttp(Http):
         """Rejects the token unless it arrives in the form `want` ('plain' or 'bearer')."""
