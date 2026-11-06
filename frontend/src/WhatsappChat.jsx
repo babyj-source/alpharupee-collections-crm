@@ -23,7 +23,7 @@ export default function Whatsapp({ loan, meta, onSent, full = false }) {
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
   const [msg, setMsg] = useState({ ok: "", err: "" });
-  const bottom = useRef(null);
+  const box = useRef(null);
   const count = useRef(0);
 
   const loadPreview = () => api(`/messaging/whatsapp/preview?loan=${loan.id}`).then(setPreview).catch(() => setPreview(null));
@@ -36,7 +36,7 @@ export default function Whatsapp({ loan, meta, onSent, full = false }) {
     return () => clearInterval(t);
   }, [loan.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (chat.messages.length !== count.current) { count.current = chat.messages.length; bottom.current?.scrollIntoView?.({ block: "end" }); }
+    if (chat.messages.length !== count.current) { count.current = chat.messages.length; if (box.current) box.current.scrollTop = box.current.scrollHeight; }   // scroll the chat itself, never the page behind it
   }, [chat.messages.length]);
 
   async function sendTemplate() {
@@ -101,10 +101,9 @@ export default function Whatsapp({ loan, meta, onSent, full = false }) {
     <div className={full ? "wa wa-full" : "wa"}>
       {!full && <h4>WhatsApp</h4>}
       {!full && templateBox}
-      <div className="chat" aria-label="WhatsApp conversation">
+      <div className="chat" ref={box} aria-label="WhatsApp conversation">
         {chat.messages.length === 0 && <p className="muted small chat-empty">No WhatsApp messages with this borrower yet. Start with the approved message below.</p>}
         {bubbles}
-        <div ref={bottom} />
       </div>
       {full && !chat.window_open && templateBox}
       <form className="row chat-input" onSubmit={sendText}>
