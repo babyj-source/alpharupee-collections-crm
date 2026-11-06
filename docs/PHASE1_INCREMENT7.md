@@ -79,3 +79,28 @@ bash /opt/crm/current/server-tools/set-sms.sh off
 
 Payment-link templates are sent with MSG91 `"short_url": "1"` so MSG91 shortens the link (a long link failed DLT with "Template variable
 exceeded max length"). Templates without a link variable keep `"short_url": "0"`.
+
+## WhatsApp: template messages and chat with the customer (part 6)
+
+**Status: built and tested against a fake MSG91. The MSG91 WhatsApp request shapes were written from memory (MSG91's documentation could
+not be read from here), so the first real send and the first real inbound message must be checked.** If MSG91 refuses, the error text is
+shown on the screen and stored on the message; adjust `MSG91_WHATSAPP_TEMPLATE_URL` / `MSG91_WHATSAPP_TEXT_URL` or `msg91.py` to the spec.
+
+* **Template message:** the account screen shows the WhatsApp template picked for the loan (only the overdue template is picked
+  automatically for now) and the exact text, with **Send on WhatsApp**, a confirm step and **Send again**. Same rules as SMS: 08:00-19:00,
+  not paid / dispute, valid mobile, 3 per loan per day (`WHATSAPP_MAX_PER_LOAN_PER_DAY`), repeat needs confirmation.
+  Image-header templates (`wa_due0`, `wa_overdue`) refuse until an admin sets `header_image_url` (`PUT /api/messaging/whatsapp/<key>`).
+* **Chat:** the same section shows the conversation (customer messages on the left, ours on the right, with Sent / Delivered / Read / Not
+  delivered). It refreshes every 8 seconds. Free text can be typed only while the customer's 24-hour window is open (they wrote to us in the
+  last 24 hours); otherwise the box says to use the template.
+* **WhatsApp chats** (new menu item for every role): the accounts with WhatsApp messages, newest first, with the unread count; click opens the
+  account with the conversation. Users see only their own accounts (same visibility as the worklist).
+* **Webhook:** `POST /api/messaging/whatsapp/webhook?token=<WHATSAPP_WEBHOOK_TOKEN>` receives the customer's replies and delivery
+  status from MSG91. A customer is matched to the loan by the last 10 digits of the borrower's (or alternate) mobile; a message from a
+  number that is not in the CRM is kept in the webhook log only. Admin can look at the last 30 bodies (numbers masked) at
+  `GET /api/messaging/whatsapp/webhook-log` to confirm the format MSG91 really sends.
+* **Privacy:** only the last 4 digits of a number are stored on a message; the timeline records "WhatsApp sent/failed" without the text.
+* **Switch on (server):** `sudo -iu deploy`, then `/opt/crm/current/server-tools/set-whatsapp.sh number <business number>`, `... token`
+  (prints the webhook URL to put in MSG91's inbound and status webhooks), `... on`. `off` switches it off. `/api/meta` carries `whatsapp_enabled`.
+* **Not built: WhatsApp calling.** Needs the MSG91 WhatsApp calling specification; Easebuzz is a payment gateway and has no WhatsApp calls.
+* Still needed: the next-EMI-due date (for the due-date reminders), header image URLs, the business number.

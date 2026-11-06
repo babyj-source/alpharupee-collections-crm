@@ -45,3 +45,78 @@ def send_sms(template, mobile, variables):
         log.error("MSG91 refused an SMS (HTTP %s): %s", resp.status_code, message or "no message")   # never the number or text
         raise Msg91Error(f"MSG91 refused (HTTP {resp.status_code}): {message or 'no message'}")
     return message
+
+
+# ---------------------------------------------------------------------------------------------------------------- WhatsApp
+# The request shapes follow MSG91's WhatsApp API as remembered (template bulk endpoint, plain-text session endpoint) and the
+# variable names (header_1, body_1 ...) in the approved template files. They have NOT been checked against MSG91's documentation.
+
+def whatsapp_enabled():
+    return bool(settings.MSG91_WHATSAPP_ENABLED and settings.MSG91_AUTHKEY and settings.MSG91_WHATSAPP_NUMBER)
+
+
+def _find(obj, keys):
+    """First value found under any of `keys`, looking through nested dicts and lists."""
+    if isinstance(obj, dict):
+        for k in keys:
+            if obj.get(k) not in (None, "", [], {}):
+                return obj[k]
+        for v in obj.values():
+            r = _find(v, keys)
+            if r not in (None, ""):
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find(v, keys)
+            if r not in (None, ""):
+                return r
+    return None
+
+
+def _wa_post(url, body):
+    if not whatsapp_enabled():
+        raise Msg91Disabled("WhatsApp sending is switched off")
+    headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=15)
+    except requests.RequestException as exc:
+        raise Msg91Error("MSG91 request failed") from exc
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    d = data if isinstance(data, dict) else {}
+    message = str(d.get("message") or d.get("error") or d.get("errors") or "")[:120]
+    bad = (str(d.get("status", "")).lower() in ("fail", "failed", "error") or str(d.get("type", "")).lower() == "error"
+           or d.get("success") is False or d.get("hasError") is True)
+    log.info("MSG91 WhatsApp replied (HTTP %s): %s", resp.status_code,
+             {k: d[k] for k in ("status", "type", "success", "hasError", "message") if k in d and not isinstance(d[k], (dict, list))} or "(no verdict fields)")
+    if resp.status_code != 200 or bad:
+        raise Msg91Error(f"MSG91 refused (HTTP {resp.status_code}): {message or 'no message'}")
+    ref = _find(d, ("message_uuid", "uuid", "request_id", "messageId", "message_id", "id"))
+    return str(ref)[:120] if ref else ""
+
+
+def send_whatsapp_template(template, mobile, components):
+    """components: {"body_1": {"type": "text", "value": "..."}, "header_1": {"type": "image", "value": "https://..."}}"""
+    body = {
+        "integrated_number": settings.MSG91_WHATSAPP_NUMBER,
+        "content_type": "template",
+        "payload": {
+            "messaging_product": "whatsapp",
+            "type": "template",
+            "template": {
+                "name": template.name,
+                "language": {"code": template.language, "policy": "deterministic"},
+                "namespace": template.namespace,
+                "to_and_components": [{"to": [mobile], "components": components}],
+            },
+        },
+    }
+    return _wa_post(settings.MSG91_WHATSAPP_TEMPLATE_URL, body)
+
+
+def send_whatsapp_text(mobile, text):
+    """Free text, allowed only while the customer's 24-hour window is open."""
+    body = {"integrated_number": settings.MSG91_WHATSAPP_NUMBER, "recipient_number": mobile, "content_type": "text", "text": text}
+    return _wa_post(settings.MSG91_WHATSAPP_TEXT_URL, body)
