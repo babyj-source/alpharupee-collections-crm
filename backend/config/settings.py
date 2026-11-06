@@ -150,6 +150,8 @@ MSG91_OTP_VARIABLE = env("MSG91_OTP_VARIABLE", "OTP")
 MSG91_SMS_ENABLED = env_bool("MSG91_SMS_ENABLED", False)
 # Used as the ##url## of the payment-link templates until the Easebuzz link is wired. Must be https://. Empty = a link must be given.
 PAYMENT_LINK_DEFAULT = env("PAYMENT_LINK_DEFAULT", "")
+# Most SMS one loan may get in a day (all templates together). Sending the same template again needs a confirmation first.
+SMS_MAX_PER_LOAN_PER_DAY = int(env("SMS_MAX_PER_LOAN_PER_DAY", "3"))
 
 # ---- LMS (read-only MySQL)
 LMS_DB = {
