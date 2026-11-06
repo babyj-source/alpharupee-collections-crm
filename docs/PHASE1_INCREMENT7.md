@@ -37,3 +37,23 @@ auth key and, for the payment-link templates, the Easebuzz link API.
 * `GET /api/messaging/whatsapp` (head or admin) lists them. The text and ids cannot be edited in the CRM.
 * Which loans are "due in 2 days / tomorrow / today" needs the next EMI due date, which the CRM does not hold yet (same
   gap as the SMS Demand Reminder). Missed payments (DPD 1 or more) need no extra field.
+
+## Sending SMS (MSG91 Flow API) - part 2
+
+Uses the same `MSG91_AUTHKEY` as the login OTP. **Off until switched on**:
+
+```
+sudo -iu deploy
+bash /opt/crm/current/server-tools/set-sms.sh on     # asks for the https link to put in the SMS, then restarts
+bash /opt/crm/current/server-tools/set-sms.sh off
+```
+
+* `POST /api/messaging/sms {"loan": <id>}`: sends the template for the loan's days past due. An agent can do this only for
+  their own accounts and cannot pick the template or the link. Head and Admin may add `"template": "<key>"` and `"link": "https://..."`.
+* `GET /api/messaging/log?loan=<id>`: what was sent for that account (number shown as xxxxxx1234; the full number is never stored).
+* The `##url##` is `PAYMENT_LINK_DEFAULT` until the Easebuzz link is wired. Every payment-link template refuses to go without a link.
+* Rules that stop a message: outside 08:00-19:00, account marked paid or in dispute, no valid borrower mobile, the same
+  template already sent to that loan today, missing value (for example the Demand Reminder has no due date yet).
+* A message MSG91 rejects is logged as failed (with MSG91's reason) and can be sent again; it does not count as sent.
+* Limits: 30 sends a minute per user. Every send is in the audit log.
+* There is no button on the account screen yet.

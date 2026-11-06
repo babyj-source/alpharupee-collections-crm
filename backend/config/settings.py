@@ -106,7 +106,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsSettled"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "dialer_login": "5/min"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "sms": "30/min", "dialer_login": "5/min"},
     "NUM_PROXIES": int(env("NUM_PROXIES", "1")),  # nginx. Use 2 when Cloudflare is switched on.
     "DEFAULT_PAGINATION_CLASS": "loans.pagination.Page",
     "PAGE_SIZE": 50,
@@ -137,6 +137,10 @@ MSG91_FLOW_URL = env("MSG91_FLOW_URL", "https://control.msg91.com/api/v5/flow")
 MSG91_OTP_URL = env("MSG91_OTP_URL", "https://control.msg91.com/api/v5/otp")
 # Name of the code variable in the approved template (##OTP## in template OTP-1 v1.0).
 MSG91_OTP_VARIABLE = env("MSG91_OTP_VARIABLE", "OTP")
+# Collections SMS (reminder and payment-link templates). OFF until switched on, so nothing reaches a borrower by accident.
+MSG91_SMS_ENABLED = env_bool("MSG91_SMS_ENABLED", False)
+# Used as the ##url## of the payment-link templates until the Easebuzz link is wired. Must be https://. Empty = a link must be given.
+PAYMENT_LINK_DEFAULT = env("PAYMENT_LINK_DEFAULT", "")
 
 # ---- LMS (read-only MySQL)
 LMS_DB = {
