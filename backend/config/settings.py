@@ -132,6 +132,9 @@ SMARTFLO_CLICK_TO_CALL_TYPE = env("SMARTFLO_CLICK_TO_CALL_TYPE", "")
 # The number the customer sees (Smartflo's "caller_id", the account's outgoing number) and how long Smartflo waits for the agent, in seconds.
 SMARTFLO_CALLER_ID = env("SMARTFLO_CALLER_ID", "")
 SMARTFLO_CALL_TIMEOUT = int(env("SMARTFLO_CALL_TIMEOUT", "300"))
+# Ends a live call from the agent screen. NOT yet checked against Smartflo's documentation: if Smartflo refuses it the agent
+# is told to end the call on the phone, and the path or body can be corrected here without a code change.
+SMARTFLO_HANGUP_PATH = env("SMARTFLO_HANGUP_PATH", "/v1/call/hangup")
 
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")

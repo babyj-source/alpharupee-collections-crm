@@ -55,6 +55,9 @@ class FakeSmartflo:
     def click_to_call(self, token, agent_number, destination):
         return self._do("click_to_call", token, agent_number, destination)
 
+    def hangup(self, token, call_id):
+        return self._do("hangup", token, call_id)
+
     def names(self):
         return [c[0] for c in self.calls]
 
@@ -536,6 +539,65 @@ class ClickToCallTests(DialerBase):
         self.assertFalse(Activity.objects.filter(kind="call").exists())
 
 
+# The shape Smartflo really returns for a live click-to-call (numbers changed).
+LIVE = {"id": 1, "call_id": "HYD1-D11-1.522967", "type": "click-to-call", "source": "0606000001", "state": "Answered",
+        "customer_number": "09111111111", "destination": "+919111111111", "call_time": "00:00:16", "agent_name": "Asha"}
+
+
+class CallPanelTests(DialerBase):
+    def status(self, user=None, loan=None):
+        return self.api(user or self.a1).get(f"/api/dialer/call/status?loan={(loan or self.l1).pk}")
+
+    def hangup(self, user=None, loan=None):
+        return self.post(user or self.a1, "call/hangup", {"loan_id": (loan or self.l1).pk})
+
+    def test_no_call_means_none(self):
+        self.fake.live = []
+        self.assertEqual(self.status().json(), {"state": "none", "seconds": 0})
+
+    def test_connected_call_with_seconds_and_no_number(self):
+        self.fake.live = [LIVE]
+        r = self.status()
+        self.assertEqual(r.json(), {"state": "connected", "seconds": 16})
+        self.assertNotIn("9111111111", r.content.decode())
+        self.assertNotIn("HYD1", r.content.decode())
+
+    def test_ringing_state_is_not_connected(self):
+        self.fake.live = [dict(LIVE, state="Ringing", call_time="00:00:02")]
+        self.assertEqual(self.status().json(), {"state": "ringing", "seconds": 2})
+
+    def test_a_call_to_someone_elses_number_is_not_shown_on_this_account(self):
+        self.fake.live = [dict(LIVE, customer_number="09999999999")]
+        self.assertEqual(self.status().json()["state"], "none")
+
+    def test_status_refusals(self):
+        self.assertEqual(self.status(self.a2).status_code, 404)           # not their account
+        self.assertEqual(self.api().get(f"/api/dialer/call/status?loan={self.l1.pk}").status_code, 403)
+        self.fake.fail = {"live_calls": SmartfloError("Could not reach Smartflo.")}
+        self.assertEqual(self.status().status_code, 502)
+
+    def test_hangup_uses_the_call_id_from_smartflo_not_the_browser(self):
+        self.fake.live = [LIVE]
+        r = self.post(self.a1, "call/hangup", {"loan_id": self.l1.pk, "call_id": "attacker-chosen"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.fake.calls[-1], ("hangup", "acct-token", "HYD1-D11-1.522967"))
+        self.assertTrue(AuditLog.objects.filter(action="call_ended").exists())
+
+    def test_hangup_with_no_live_call_or_smartflo_refusal(self):
+        self.fake.live = []
+        self.assertEqual(self.hangup().status_code, 400)
+        self.assertNotIn("hangup", self.fake.names())
+        self.fake.live = [LIVE]
+        self.fake.fail = {"hangup": SmartfloError("Smartflo refused the request (404).", status=404)}
+        r = self.hangup()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("End the call on your phone", r.json()["detail"])
+
+    def test_hangup_not_for_someone_elses_account(self):
+        self.fake.live = [LIVE]
+        self.assertEqual(self.hangup(self.a2).status_code, 404)
+
+
 class ClientTests(Base):
     class Http:
         def __init__(self, status=200, body=None):
@@ -596,6 +658,17 @@ class ClientTests(Base):
             self.assertTrue(ok.click_to_call("T1", "0606", "9876543210")["success"])
         self.assertIn("call queued", cm.output[0])
         self.assertNotIn("9876543210", cm.output[0])       # the number never reaches the log
+
+    @ON
+    def test_hangup_request_and_live_call_parsing(self):
+        h = self.Http(body={"success": True, "message": "ok"})
+        SmartfloClient(h).hangup("T1", "HYD1-1")
+        self.assertEqual((h.sent["method"], h.sent["url"].endswith("/v1/call/hangup"), h.sent["json"], h.sent["headers"]["Authorization"]),
+                         ("POST", True, {"call_id": "HYD1-1"}, "T1"))
+        with self.assertRaisesMessage(SmartfloError, "Smartflo did not end the call"):
+            SmartfloClient(self.Http(body={"success": False, "message": "no such call"})).hangup("T1", "x")
+        calls, unparsed = parse_live_calls([LIVE])
+        self.assertEqual((calls, unparsed), ([{"id": "HYD1-D11-1.522967", "number": "9111111111", "state": "Answered", "seconds": 16}], []))
 
     @ON
     def test_session_missing_reply_is_shown_to_the_agent(self):
@@ -676,7 +749,7 @@ class ClientTests(Base):
 
     def test_parse_live_calls(self):
         one = {"call_id": "c1", "customer_number": "+91 98765-43210", "status": "answered"}
-        self.assertEqual(parse_live_calls([one])[0], [{"id": "c1", "number": "9876543210", "state": "answered"}])
+        self.assertEqual(parse_live_calls([one])[0], [{"id": "c1", "number": "9876543210", "state": "answered", "seconds": 0}])
         self.assertEqual(parse_live_calls({"data": [one]})[0][0]["id"], "c1")
         self.assertEqual(parse_live_calls({"data": {"calls": [one]}})[0][0]["number"], "9876543210")
         self.assertEqual(parse_live_calls({"results": [{"uuid": "u", "destination": "9876543210"}]})[0][0]["id"], "u")

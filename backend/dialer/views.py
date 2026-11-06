@@ -24,7 +24,7 @@ from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITIO
 
 from .models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap, PushedLead
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
-from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, last10, parse_live_calls
+from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls
 
 TOKEN_MINUTES = 55  # Smartflo agent tokens last one hour
 ACCESS_HOURS = 3
@@ -579,4 +579,66 @@ class CallView(APIView):
         label = {"borrower": "borrower", "alt": "borrower's second number", "ref1": "reference 1", "ref2": "reference 2"}[d["which"]]
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.CALL, detail=f"Call placed to {label}")
         audit(request, "call_placed", user=request.user, object_type="loan", object_id=loan.pk, detail=d["which"])
+        return Response({"ok": True})
+
+
+def _live_call_for(request, loan):
+    """The agent's live call that is to one of this account's numbers, or None. Raises ValueError(message) when we cannot look."""
+    if not enabled():
+        raise ValueError("The dialler is switched off on this server.")
+    p = _profile(request.user)
+    if not (p and p.agent_number):
+        raise ValueError("Your Smartflo agent number is not set up yet.")
+    s, _ = current_session(request.user)
+    token = unseal(s.token_enc) if s else settings.SMARTFLO_API_TOKEN
+    mine = {last10(loan.number_for(k)) for k in ("borrower", "alt", "ref1", "ref2")} - {""}
+    calls, _ = parse_live_calls(get_client().live_calls(token, p.agent_number))
+    return token, next((c for c in calls if c["number"] in mine), None)
+
+
+class CallStatusView(APIView):
+    """Is the agent's call on this account ringing, connected, or over? Never returns a phone number or a call id."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def get(self, request):
+        try:
+            loan_id = int(request.query_params.get("loan"))
+        except (TypeError, ValueError):
+            return bad("Give the loan id.")
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
+        try:
+            _, call = _live_call_for(request, loan)
+        except ValueError as exc:
+            return bad(str(exc))
+        except SmartfloError as exc:
+            return bad(str(exc), 502)
+        if call is None:
+            return Response({"state": "none", "seconds": 0})
+        return Response({"state": call_phase(call["state"]), "seconds": call["seconds"]})
+
+
+class CallHangupView(APIView):
+    """End the agent's live call on this account. The call id comes from Smartflo's own live list, never from the browser."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        try:
+            loan_id = int(request.data.get("loan_id"))
+        except (TypeError, ValueError):
+            return bad("Give the loan id.")
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
+        try:
+            token, call = _live_call_for(request, loan)
+            if call is None:
+                return bad("There is no live call on this account.")
+            get_client().hangup(token, call["id"])
+        except ValueError as exc:
+            return bad(str(exc))
+        except SmartfloError as exc:
+            return bad(f"{exc} End the call on your phone instead.", 502)
+        audit(request, "call_ended", user=request.user, object_type="loan", object_id=loan.pk)
         return Response({"ok": True})

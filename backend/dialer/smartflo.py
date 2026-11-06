@@ -138,6 +138,14 @@ class SmartfloClient:
             raise SmartfloError(f"Smartflo did not place the call. {reason}")
         return data
 
+    def hangup(self, token, call_id):
+        data = self._call("POST", settings.SMARTFLO_HANGUP_PATH, token, json={"call_id": str(call_id)})
+        d = data if isinstance(data, dict) else {}
+        log.info("Smartflo hangup replied: %s", {k: d[k] for k in ("success", "status", "message", "error") if k in d and not isinstance(d[k], (dict, list))} or "(no verdict fields)")
+        if d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure"):
+            raise SmartfloError("Smartflo did not end the call. " + re.sub(r"\s+", " ", str(d.get("message") or d.get("error") or ""))[:160])
+        return data
+
 
 _ID_KEYS = ("call_id", "unique_id", "uuid", "callid", "id")
 _NUMBER_KEYS = ("customer_number", "client_number", "destination_number", "destination", "called_number", "callee", "to", "phone", "number", "customer")
@@ -154,6 +162,18 @@ def _first(d, keys):
 def last10(value):
     d = re.sub(r"\D", "", str(value or ""))
     return d[-10:] if len(d) >= 10 else ""
+
+
+def _seconds(v):
+    """'00:00:16' -> 16 (Smartflo's call_time). Anything else -> 0."""
+    m = re.fullmatch(r"(\d+):(\d{2}):(\d{2})", str(v or "").strip())
+    return int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) if m else 0
+
+
+def call_phase(state):
+    """Smartflo's live-call state -> what the agent screen shows. 'Answered' is the one state seen so far; anything that says the
+    call is up counts as connected, everything else on a live call is still ringing / dialling."""
+    return "connected" if re.search(r"answer|connect|bridge|talk|progress|up", str(state or ""), re.I) else "ringing"
 
 
 def parse_live_calls(payload):
@@ -182,5 +202,5 @@ def parse_live_calls(payload):
         if cid is None or not num:
             unparsed = sorted(str(k) for k in it.keys())[:30]
             continue
-        calls.append({"id": str(cid), "number": num, "state": str(_first(it, _STATE_KEYS) or "")})
+        calls.append({"id": str(cid), "number": num, "state": str(_first(it, _STATE_KEYS) or ""), "seconds": _seconds(it.get("call_time"))})
     return calls, unparsed

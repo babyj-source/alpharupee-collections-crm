@@ -79,3 +79,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .daybars { display: flex; align-items: flex-end; gap: 3px; height: 160px; margin: 8px 0; }
 .daybar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
 .bar-fill.v { width: 100%; height: auto; border-radius: 3px 3px 0 0; }
+
+/* live call panel on the account screen */
+.callpanel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; }
+.callpanel.ringing { border-left-color: var(--accent); }
+.callpanel.connected { border-left-color: var(--brand); }
+.callpanel.noshow { border-left-color: var(--err); }
+.callpanel strong { flex: 1 1 14rem; }
+button.danger { background: var(--err); color: #fff; }
+button.danger:disabled { opacity: .6; }
