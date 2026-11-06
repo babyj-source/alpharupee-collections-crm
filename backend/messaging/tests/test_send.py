@@ -9,7 +9,8 @@ from accounts.models import AuditLog
 from loans.tests.test_workflow import Base
 from messaging import msg91
 from messaging.models import MessageLog, SmsTemplate
-from messaging.service import SendRefused, in_window, send_sms_for_loan
+from loans.models import Activity
+from messaging.service import RepeatNeeded, SendRefused, in_window, send_sms_for_loan
 
 LINK = "https://pay.example/abc"
 DAY = datetime(2026, 11, 5, 11, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
@@ -54,11 +55,28 @@ class ServiceTests(Sms):
         self.assertEqual(m.mobile_last4, "2222")
         self.assertNotIn("9222222222", m.text)
 
-    def test_same_message_twice_in_a_day_is_refused(self):
+    def test_the_same_message_again_needs_confirmation_and_there_is_a_daily_cap(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()) as post:
+            self.send()
+            with self.assertRaisesMessage(RepeatNeeded, "already sent to this borrower today at"):
+                self.send()
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(self.send(again=True).state, "sent")          # confirmed: goes again
+            self.assertEqual(self.send(again=True).state, "sent")          # third today
+            with self.assertRaisesMessage(SendRefused, "already had 3 SMS today"):
+                self.send(again=True)                                      # the cap holds even when confirmed
+            self.assertEqual(post.call_count, 3)
+
+    def test_the_timeline_records_sent_and_failed_without_text_or_number(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=FakeResp(200, {"type": "error", "message": "blocked"})):
+            self.send()
         with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()):
             self.send()
-            with self.assertRaisesMessage(SendRefused, "already sent"):
-                self.send()
+        rows = list(Activity.objects.filter(loan=self.l2, kind="message").order_by("id").values_list("detail", flat=True))
+        self.assertEqual(rows, ["SMS failed to the borrower: PaymentRemainder-BKT2", "SMS sent to the borrower: PaymentRemainder-BKT2"])
+        tl = self.api(self.a2).get(f"/api/loans/{self.l2.pk}/timeline").json()
+        self.assertEqual(tl[0]["detail"], "SMS sent to the borrower: PaymentRemainder-BKT2")
+        self.assertNotIn("9222222222", str(tl))
 
     def test_msg91_refusal_is_logged_as_failed_and_can_be_retried(self):
         bad = FakeResp(200, {"type": "error", "message": "Template not approved"})
@@ -134,6 +152,16 @@ class ApiTests(Sms):
         self.assertEqual((r.status_code, r.json()["template"]), (201, "npa"))
         self.assertEqual(post.call_args.kwargs["json"]["recipients"][0]["url"], "https://pay.example/xyz")
 
+    def test_api_repeat_needs_again_true(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()) as post:
+            self.assertEqual(self.post(self.a2, {"loan": self.l2.pk}).status_code, 201)
+            r = self.post(self.a2, {"loan": self.l2.pk})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("already sent", r.json()["detail"])
+            self.assertEqual(self.post(self.a2, {"loan": self.l2.pk, "again": "yes"}).status_code, 400)   # only a real true counts
+            self.assertEqual(self.post(self.a2, {"loan": self.l2.pk, "again": True}).status_code, 201)
+            self.assertEqual(post.call_count, 2)
+
     def test_provider_failure_is_a_502_and_is_logged(self):
         with mock.patch("messaging.msg91.requests.post", return_value=FakeResp(200, {"type": "error", "message": "blocked"})):
             r = self.post(self.a2, {"loan": self.l2.pk})
@@ -171,7 +199,10 @@ class PreviewTests(Sms):
     def test_preview_follows_the_same_rules_as_send(self):
         with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()):
             self.send()
-        self.assertIn("already sent", self.get(self.a2).json()["problem"])
+        r = self.get(self.a2).json()
+        self.assertEqual(r["problem"], "")                       # a repeat is allowed, with a warning
+        self.assertIn("already sent to this borrower today at", r["warning"])
+        self.assertIn("Outstanding", r["text"])
         self.assertEqual(self.get(self.a1).status_code, 404)             # someone else's account
         self.assertEqual(self.api().get(f"/api/messaging/preview?loan={self.l2.pk}").status_code, 403)
 

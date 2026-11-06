@@ -110,7 +110,7 @@ class SendSmsView(APIView):
             key = (request.data.get("template") or "").strip() or None
             link = (request.data.get("link") or "").strip() or None
         try:
-            m = send_sms_for_loan(loan, request.user, template_key=key, link=link)
+            m = send_sms_for_loan(loan, request.user, template_key=key, link=link, again=request.data.get("again") is True)
         except SendRefused as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         audit(request, "sms_sent" if m.state == "sent" else "sms_failed", user=request.user, object_type="loan", object_id=loan.pk,

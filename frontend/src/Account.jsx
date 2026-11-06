@@ -175,11 +175,10 @@ function Messages({ loan, meta, onSent }) {
   async function send() {
     setBusy(true); setMsg({ ok: "", err: "" });
     try {
-      await api("/messaging/sms", { method: "POST", body: { loan: loan.id } });
+      await api("/messaging/sms", { method: "POST", body: { loan: loan.id, again: !!preview?.warning } });
       setMsg({ ok: "SMS sent to the borrower.", err: "" });
-      onSent?.();
     } catch (e) { setMsg({ ok: "", err: e.message }); }
-    finally { setBusy(false); setConfirming(false); load(); }
+    finally { setBusy(false); setConfirming(false); load(); onSent?.(); }   // a failed attempt is on the timeline too
   }
 
   const off = meta && !meta.sms_enabled;
@@ -192,7 +191,8 @@ function Messages({ loan, meta, onSent }) {
         <div className="msgbox">
           <div className="muted small">{preview.name} · what the borrower will receive</div>
           <p className="msgtext">{preview.text}</p>
-          {!confirming && <button disabled={busy} onClick={() => setConfirming(true)}>Send SMS</button>}
+          {preview.warning && <p className="small warn">{preview.warning} You can send it again.</p>}
+          {!confirming && <button disabled={busy} onClick={() => setConfirming(true)}>{preview.warning ? "Send again" : "Send SMS"}</button>}
           {confirming && (
             <div className="row">
               <span className="small">Send this to the borrower now?</span>

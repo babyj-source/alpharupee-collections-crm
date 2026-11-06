@@ -66,3 +66,11 @@ bash /opt/crm/current/server-tools/set-sms.sh off
   outside 08:00-19:00, no link, already sent today ...). The preview and the send use the same rules.
 * `/api/meta` now carries `sms_enabled` so the screen can say when sending is switched off.
 * WhatsApp sending is not built yet (templates are stored; needs the header images, the next-EMI-due date and MSG91's WhatsApp API).
+
+## Sending again, and the timeline (part 4)
+
+* The same SMS can be sent to a borrower again on the same day. The screen warns ("already sent today at 12:59") and the button
+  becomes **Send again**; the API needs `"again": true`. A hard cap of `SMS_MAX_PER_LOAN_PER_DAY` (default 3) SMS per loan per day holds
+  even when confirmed. A failed attempt does not count.
+* Every send, and every attempt MSG91 rejects, is written to the account **timeline** ("SMS sent to the borrower: PaymentRemainder-BKT2").
+  The timeline never holds the text or the number; the Messages section shows the text.

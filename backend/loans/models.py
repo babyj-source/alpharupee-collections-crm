@@ -147,6 +147,7 @@ class Activity(models.Model):
         REFERENCE = "reference", "Reference contact"
         PTP = "ptp", "Promise to pay"
         CALL = "call", "Call placed"
+        MESSAGE = "message", "Message"
 
     loan = models.ForeignKey(Loan, on_delete=models.CASCADE, related_name="activities")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
