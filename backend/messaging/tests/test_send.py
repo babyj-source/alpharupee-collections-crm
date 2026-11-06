@@ -49,6 +49,7 @@ class ServiceTests(Sms):
         self.assertEqual((m.state, m.template_key, m.provider_ref), ("sent", "bkt2", "req123"))
         body = post.call_args.kwargs["json"]
         self.assertEqual(body["template_id"], "6ab6233dd16941664d09be52")
+        self.assertEqual(body["short_url"], "1")                      # payment-link template: MSG91 shortens the link
         self.assertEqual(body["recipients"], [{"mobiles": "919222222222", "number": "4500", "url": LINK}])
         self.assertEqual(post.call_args.kwargs["headers"]["authkey"], "k")
         self.assertEqual(m.text, f"Alpha Rupee: Your loan is overdue. Outstanding ₹4500 . Please pay immediately or call +918065075438 or pay now: {LINK}")
@@ -106,6 +107,13 @@ class ServiceTests(Sms):
     def test_no_link_means_no_message(self):
         with self.assertRaisesMessage(SendRefused, "payment link"):
             self.send()
+
+    def test_a_template_without_a_link_does_not_ask_for_shortening(self):
+        t = SmsTemplate.objects.get(key="demand")
+        t.variables = {"number": "installment_amount", "var2": "account_id"}     # no link variable
+        with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()) as post:
+            msg91.send_sms(t, "919222222222", {"number": "500", "var2": "L2"})
+        self.assertEqual(post.call_args.kwargs["json"]["short_url"], "0")
 
     def test_demand_reminder_is_refused_until_due_date_exists(self):
         with self.assertRaisesMessage(SendRefused, "Cannot build"):

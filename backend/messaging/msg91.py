@@ -21,9 +21,12 @@ def send_sms(template, mobile, variables):
         raise Msg91Disabled("SMS sending is switched off")
     if not settings.MSG91_AUTHKEY:
         raise Msg91Error("MSG91 is not configured")
+    # Payment-link templates ask MSG91 to shorten the link (short_url 1) so a long payment link fits the DLT variable length.
+    # Other templates carry no link, so shortening stays off for them.
+    shorten = "payment_link" in template.variables.values()
     body = {
         "template_id": template.msg91_template_id,
-        "short_url": "0",
+        "short_url": "1" if shorten else "0",
         "recipients": [{"mobiles": mobile, **variables}],
     }
     headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json", "Accept": "application/json"}

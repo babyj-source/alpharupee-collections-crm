@@ -74,3 +74,8 @@ bash /opt/crm/current/server-tools/set-sms.sh off
   even when confirmed. A failed attempt does not count.
 * Every send, and every attempt MSG91 rejects, is written to the account **timeline** ("SMS sent to the borrower: PaymentRemainder-BKT2").
   The timeline never holds the text or the number; the Messages section shows the text.
+
+## Link shortening (part 5)
+
+Payment-link templates are sent with MSG91 `"short_url": "1"` so MSG91 shortens the link (a long link failed DLT with "Template variable
+exceeded max length"). Templates without a link variable keep `"short_url": "0"`.
