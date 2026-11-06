@@ -57,3 +57,12 @@ bash /opt/crm/current/server-tools/set-sms.sh off
 * A message MSG91 rejects is logged as failed (with MSG91's reason) and can be sent again; it does not count as sent.
 * Limits: 30 sends a minute per user. Every send is in the audit log.
 * There is no button on the account screen yet.
+
+## Messages section on the account screen (part 3)
+
+* The account drawer has a **Messages** section: it shows the template picked for the loan's days past due and the exact text the
+  borrower will receive, with **Send SMS** and a confirm step, and the last messages sent (Sent / Failed, who, when).
+* `GET /api/messaging/preview?loan=<id>` returns `{template, name, text, problem}`; `problem` says why it cannot go (switched off,
+  outside 08:00-19:00, no link, already sent today ...). The preview and the send use the same rules.
+* `/api/meta` now carries `sms_enabled` so the screen can say when sending is switched off.
+* WhatsApp sending is not built yet (templates are stored; needs the header images, the next-EMI-due date and MSG91's WhatsApp API).

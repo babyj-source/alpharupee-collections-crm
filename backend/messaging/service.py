@@ -18,7 +18,8 @@ def in_window(now=None):
     return CALL_START_HOUR <= h < CALL_END_HOUR      # same 08:00-19:00 window as calls
 
 
-def send_sms_for_loan(loan, user, template_key=None, link=None, now=None):
+def _prepare(loan, template_key, link, now):
+    """Pick the template and build the message, or raise SendRefused. Shared by the preview and the send so they never disagree."""
     link = (link or settings.PAYMENT_LINK_DEFAULT or "").strip() or None
     if template_key:
         template = SmsTemplate.objects.filter(key=template_key, active=True).first()
@@ -44,6 +45,20 @@ def send_sms_for_loan(loan, user, template_key=None, link=None, now=None):
     today = timezone.localdate(now) if now else timezone.localdate()
     if MessageLog.objects.filter(loan=loan, template_key=template.key, state="sent", created_at__date=today).exists():
         raise SendRefused("This message was already sent to this borrower today.")
+    return template, values, mobile
+
+
+def preview_sms(loan, template_key=None, link=None, now=None):
+    """What would be sent now, as {template, name, text, problem}. `problem` says why it cannot go (text is then empty)."""
+    try:
+        template, values, _ = _prepare(loan, template_key, link, now)
+    except SendRefused as exc:
+        return {"template": template_key or "", "name": "", "text": "", "problem": str(exc)}
+    return {"template": template.key, "name": template.name, "text": render(template, values), "problem": ""}
+
+
+def send_sms_for_loan(loan, user, template_key=None, link=None, now=None):
+    template, values, mobile = _prepare(loan, template_key, link, now)
     text = render(template, values)
     log = MessageLog(loan=loan, template_key=template.key, msg91_template_id=template.msg91_template_id,
                      mobile_last4=mobile[-4:], text=text, sent_by=user)
