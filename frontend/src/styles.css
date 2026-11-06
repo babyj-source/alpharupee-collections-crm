@@ -113,7 +113,7 @@ button.danger:disabled { opacity: .6; }
 .chat-empty { text-align: center; margin: auto; }
 .tick { letter-spacing: -2px; } .tick.read { color: #2a8bd8; } .tick.failed { color: var(--err); font-weight: 700; letter-spacing: 0; }
 .wweb { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 12px; height: calc(100vh - 40px); }
-.wweb .card { padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.wweb-list.card, .wweb-chat.card { padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .wweb-search { padding: 10px; border-bottom: 1px solid var(--line); } .wweb-search input { width: 100%; box-sizing: border-box; }
 .wweb-rows { overflow-y: auto; flex: 1; }
 .wweb-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: transparent; color: var(--text); padding: 10px 12px; border-radius: 0; border-bottom: 1px solid var(--line); }
