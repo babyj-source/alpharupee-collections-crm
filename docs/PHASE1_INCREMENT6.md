@@ -22,3 +22,15 @@ This only works where MSG91 sign-in codes already work (auth key and approved te
 ## Tests
 
 10 new backend tests (full flow, no account enumeration, wrong / burned / expired / used code, weak password keeps the code, timeout, lockout cleared and old sessions ended, SMS failure and rate limit, nothing secret in the audit log, throttle). 154 in total. Browser check of the whole flow done.
+
+## Live call panel (account screen)
+
+After Call, the account screen shows Starting, Ringing, Connected with a timer, and Ended, and an End call button while the call is up.
+
+* `GET /api/dialer/call/status?loan=<id>`: asks Smartflo's live-calls list for the agent and returns `{state: none|ringing|connected, seconds}`.
+  It only reports a call to one of this account's own numbers, and never returns a number or a call id.
+  Read from Smartflo's real reply: `state: "Answered"` is connected, `call_time` is the timer.
+* `POST /api/dialer/call/hangup {"loan_id": id}`: the call id is taken from Smartflo's own list, never from the browser.
+  The hang-up path is `SMARTFLO_HANGUP_PATH` (default `/v1/call/hangup`) and has not been checked against Smartflo's documentation.
+  If Smartflo refuses, the agent is told to end the call on the phone.
+* Smartflo states other than "Answered" have not been seen yet; any state that is not answered/connected shows as Ringing.

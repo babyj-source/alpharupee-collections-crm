@@ -20,4 +20,6 @@ urlpatterns = [
     path("session/release", views.SessionReleaseView.as_view()),
     path("session/outcome/<int:pk>", views.SessionOutcomeView.as_view()),
     path("call", views.CallView.as_view()),
+    path("call/status", views.CallStatusView.as_view()),
+    path("call/hangup", views.CallHangupView.as_view()),
 ]

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, inr } from "./api.js";
+import { clock, startCall, step } from "./callphase.js";
 
 const STATUSES = [
   ["new", "New"], ["contacted", "Contacted"], ["reference_contacted", "Reference contacted"], ["promised", "Promise to pay"],
@@ -26,11 +27,14 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
   const [error, setError] = useState("");
   const [calling, setCalling] = useState("");
   const [callNote, setCallNote] = useState("");
+  const [live, setLive] = useState(null); // call panel state, see callphase.js
+  const [ending, setEnding] = useState(false);
   const timers = useRef({});
+  const poll = useRef(null);
 
   useEffect(() => { setLoan(first); }, [first]);
   useEffect(() => { api("/meta").then(setMeta).catch(() => {}); }, []);
-  useEffect(() => () => Object.values(timers.current).forEach(clearTimeout), []);
+  useEffect(() => () => { Object.values(timers.current).forEach(clearTimeout); clearInterval(poll.current); }, []);
   const loadTimeline = () => api(`/loans/${loan.id}/timeline`).then(setTimeline).catch(() => {});
   useEffect(() => { loadTimeline(); }, [loan.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -41,14 +45,36 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
     try { updated(await api(`/loans/${loan.id}/callback`, { method: "DELETE" })); }
     catch (e) { setError(e.message); }
   }
+  function watchCall() {
+    clearInterval(poll.current);
+    let s = startCall(Date.now()), failed = 0;
+    setLive(s);
+    poll.current = setInterval(async () => {
+      try {
+        s = step(s, await api(`/dialer/call/status?loan=${loan.id}`), Date.now());
+        failed = 0;
+        setLive(s);
+        if (s.done) clearInterval(poll.current);
+      } catch (e) {
+        if (++failed >= 3) { clearInterval(poll.current); setLive(null); setError(e.message); }
+      }
+    }, 2500);
+  }
   async function call(key) {
     setError(""); setCallNote(""); setCalling(key);
     try {
       await api("/dialer/call", { method: "POST", body: { loan_id: loan.id, which: key } });
-      setCallNote("Call requested. Smartflo rings your phone first, then connects the customer when you answer.");
       loadTimeline();
+      watchCall();
     } catch (e) { setError(e.message); } finally { setTimeout(() => setCalling(""), 4000); }
   }
+  async function endCall() {
+    setError(""); setEnding(true);
+    try { await api("/dialer/call/hangup", { method: "POST", body: { loan_id: loan.id } }); }
+    catch (e) { setError(e.message); }
+    finally { setEnding(false); }
+  }
+  const inCall = live && ["starting", "ringing", "connected"].includes(live.phase);
   async function reveal(key) {
     setError("");
     try {
@@ -96,12 +122,27 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
                 <span>{shown[c.key] || c.mobile}</span>
                 {!shown[c.key] && <button className="ghost" onClick={() => reveal(c.key)}>Show number</button>}
                 {meta?.dialer_enabled && (
-                  <button disabled={!!calling} onClick={() => call(c.key)}>{calling === c.key ? "Calling…" : "Call"}</button>
+                  <button disabled={!!calling || inCall} onClick={() => call(c.key)}>{calling === c.key ? "Calling…" : "Call"}</button>
                 )}
               </div>
             </li>
           ))}
         </ul>
+        {live && (
+          <div className={`callpanel ${live.phase}`} role="status" aria-live="polite">
+            <strong>
+              {live.phase === "starting" && "Starting the call… Smartflo rings your phone first."}
+              {live.phase === "ringing" && "Ringing… answer your phone, then the customer is connected."}
+              {live.phase === "connected" && `Connected · ${clock(live.secs)}`}
+              {live.phase === "ended" && "Call ended. Log the outcome below."}
+              {live.phase === "noshow" && "The call did not start. Check that your Smartflo phone is logged in, then try again."}
+            </strong>
+            {["ringing", "connected"].includes(live.phase) && (
+              <button className="danger" disabled={ending} onClick={endCall}>{ending ? "Ending…" : "End call"}</button>
+            )}
+            {!inCall && <button className="ghost" onClick={() => setLive(null)}>Dismiss</button>}
+          </div>
+        )}
         {Object.values(shown).some(Boolean) && <p className="muted small">Numbers hide again after 20 seconds. Each view is logged.</p>}
         <p className="muted small">If the borrower cannot be reached, call a reference and log the outcome “Reference contacted”.</p>
       </section>
