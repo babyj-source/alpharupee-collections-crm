@@ -93,8 +93,11 @@ shown on the screen and stored on the message; adjust `MSG91_WHATSAPP_TEMPLATE_U
 * **Chat:** the same section shows the conversation (customer messages on the left, ours on the right, with Sent / Delivered / Read / Not
   delivered). It refreshes every 8 seconds. Free text can be typed only while the customer's 24-hour window is open (they wrote to us in the
   last 24 hours); otherwise the box says to use the template.
-* **WhatsApp chats** (new menu item for every role): the accounts with WhatsApp messages, newest first, with the unread count; click opens the
-  account with the conversation. Users see only their own accounts (same visibility as the worklist).
+* **WhatsApp chats** (menu item for every role) is laid out like WhatsApp Web: conversations on the left (newest first, unread count, search by
+  name or account number), the open chat on the right with day separators and ticks (sent, delivered, read). Searching an account that has no
+  chat yet offers **Start a new chat** (the first message must be the approved template). The chat header has **Call** (borrower, same
+  Smartflo click-to-call as the account screen, with Ringing / Connected / End call) and **Account details** (opens the full account to log
+  the outcome). Users see only their own accounts (same visibility as the worklist). On a phone the list and the chat show one at a time.
 * **Webhook:** `POST /api/messaging/whatsapp/webhook?token=<WHATSAPP_WEBHOOK_TOKEN>` receives the customer's replies and delivery
   status from MSG91. A customer is matched to the loan by the last 10 digits of the borrower's (or alternate) mobile; a message from a
   number that is not in the CRM is kept in the webhook log only. Admin can look at the last 30 bodies (numbers masked) at

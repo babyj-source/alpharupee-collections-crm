@@ -107,3 +107,32 @@ button.danger:disabled { opacity: .6; }
 .bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble-meta { font-size: .72rem; color: var(--muted); margin-top: 2px; }
 .chat-input input { flex: 1 1 auto; min-width: 0; }
+
+/* WhatsApp-Web style chats screen */
+.chat-day { text-align: center; margin: 6px 0; } .chat-day span { font-size: .72rem; color: var(--muted); background: var(--bg); padding: 2px 10px; border-radius: 999px; }
+.chat-empty { text-align: center; margin: auto; }
+.tick { letter-spacing: -2px; } .tick.read { color: #2a8bd8; } .tick.failed { color: var(--err); font-weight: 700; letter-spacing: 0; }
+.wweb { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 12px; height: calc(100vh - 40px); }
+.wweb .card { padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.wweb-search { padding: 10px; border-bottom: 1px solid var(--line); } .wweb-search input { width: 100%; box-sizing: border-box; }
+.wweb-rows { overflow-y: auto; flex: 1; }
+.wweb-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: transparent; color: var(--text); padding: 10px 12px; border-radius: 0; border-bottom: 1px solid var(--line); }
+.wweb-row:hover { background: var(--bg); } .wweb-row.on { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.wweb-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.wweb-top, .wweb-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.wweb-top strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wweb-last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wweb-sub { padding: 8px 12px; background: var(--bg); } .pad { padding: 12px; }
+.avatar { flex: none; width: 38px; height: 38px; border-radius: 50%; background: var(--brand); color: var(--brand-text); display: grid; place-items: center; font-size: .85rem; font-weight: 600; }
+.avatar.new { background: var(--line); color: var(--text); }
+.wweb-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.wweb-back { display: none; } .wweb-empty { display: grid; place-items: center; height: 100%; text-align: center; }
+.wweb-chat .callpanel { margin: 8px 12px 0; }
+.wweb-chat .wa-full { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0 12px 10px; }
+.wweb-chat .wa-full .chat { flex: 1; max-height: none; border: 0; margin: 0; padding: 12px 4px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.wweb-chat .wa-full .msgbox { margin-top: 8px; }
+@media (max-width: 800px) {
+  .wweb { grid-template-columns: minmax(0, 1fr); height: calc(100vh - 120px); }
+  .wweb .wweb-chat { display: none; } .wweb.chat-open .wweb-list { display: none; } .wweb.chat-open .wweb-chat { display: flex; }
+  .wweb-back { display: inline-block; }
+}
