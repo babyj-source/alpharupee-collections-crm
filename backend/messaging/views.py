@@ -10,7 +10,7 @@ from accounts.permissions import IsAdmin, IsHead
 from loans.views import scoped
 
 from .models import MessageLog, SmsTemplate, WhatsappTemplate
-from .service import SendRefused, send_sms_for_loan
+from .service import SendRefused, preview_sms, send_sms_for_loan
 
 
 class TemplateSerializer(serializers.ModelSerializer):
@@ -131,3 +131,15 @@ class MessageLogView(APIView):
         loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
         rows = MessageLog.objects.filter(loan=loan).select_related("sent_by")[:30]
         return Response([_log_row(m) for m in rows])
+
+
+class PreviewView(APIView):
+    """The message an agent is about to send: which template and the exact text, or why it cannot go. Nothing is sent."""
+
+    def get(self, request):
+        try:
+            loan_id = int(request.query_params.get("loan"))
+        except (TypeError, ValueError):
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
+        return Response(preview_sms(loan))

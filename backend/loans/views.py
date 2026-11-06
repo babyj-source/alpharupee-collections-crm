@@ -399,6 +399,7 @@ class MetaView(APIView):
             "dispositions": [{"code": k, "label": v[0], "group": v[1]} for k, v in DISPOSITIONS.items()],
             "ptp_reasons": [{"code": k, "label": v} for k, v in PTP_REASONS.items()],
             "dialer_enabled": bool(settings.SMARTFLO_ENABLED and settings.SMARTFLO_API_TOKEN),
+            "sms_enabled": bool(settings.MSG91_SMS_ENABLED and settings.MSG91_AUTHKEY),
         })
 
 

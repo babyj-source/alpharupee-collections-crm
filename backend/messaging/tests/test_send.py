@@ -147,3 +147,35 @@ class ApiTests(Sms):
         self.assertEqual((len(rows), rows[0]["to"], rows[0]["sent_by"]), (1, "xxxxxx2222", "Agent Two"))
         self.assertEqual(self.api(self.a1).get(f"/api/messaging/log?loan={self.l2.pk}").status_code, 404)
         self.assertEqual(self.api().get(f"/api/messaging/log?loan={self.l2.pk}").status_code, 403)
+
+
+@ON
+class PreviewTests(Sms):
+    def get(self, user, loan=None):
+        return self.api(user).get(f"/api/messaging/preview?loan={(loan or self.l2).pk}")
+
+    def test_preview_shows_the_exact_text_and_sends_nothing(self):
+        with mock.patch("messaging.msg91.requests.post") as post:
+            r = self.get(self.a2).json()
+            post.assert_not_called()
+        self.assertEqual((r["template"], r["name"], r["problem"]), ("bkt2", "PaymentRemainder-BKT2", ""))
+        self.assertEqual(r["text"], f"Alpha Rupee: Your loan is overdue. Outstanding ₹4500 . Please pay immediately or call +918065075438 or pay now: {LINK}")
+        self.assertEqual(MessageLog.objects.count(), 0)
+
+    def test_preview_says_why_it_cannot_go(self):
+        with override_settings(PAYMENT_LINK_DEFAULT=""):
+            r = self.get(self.a2).json()
+        self.assertEqual(r["text"], "")
+        self.assertIn("payment link", r["problem"])
+
+    def test_preview_follows_the_same_rules_as_send(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=FakeResp()):
+            self.send()
+        self.assertIn("already sent", self.get(self.a2).json()["problem"])
+        self.assertEqual(self.get(self.a1).status_code, 404)             # someone else's account
+        self.assertEqual(self.api().get(f"/api/messaging/preview?loan={self.l2.pk}").status_code, 403)
+
+    def test_meta_tells_the_screen_whether_sms_is_on(self):
+        self.assertTrue(self.api(self.a2).get("/api/meta").json()["sms_enabled"])
+        with override_settings(MSG91_SMS_ENABLED=False):
+            self.assertFalse(self.api(self.a2).get("/api/meta").json()["sms_enabled"])

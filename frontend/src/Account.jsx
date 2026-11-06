@@ -147,6 +147,7 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
         <p className="muted small">If the borrower cannot be reached, call a reference and log the outcome “Reference contacted”.</p>
       </section>
 
+      <Messages loan={loan} meta={meta} onSent={loadTimeline} />
       <References loan={loan} onSaved={updated} />
       {meta && <Outcome loan={loan} meta={meta} onSaved={updated} outcomePath={outcomePath} onDialer={onDialer} />}
       <Timeline items={timeline} />
@@ -154,6 +155,68 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
       {callNote && !error && <p role="status" className="small">{callNote}</p>}
       {error && <p className="error" role="alert">{error}</p>}
     </aside>
+  );
+}
+
+// SMS reminders / payment links through MSG91. The text shown is exactly what the borrower will get.
+function Messages({ loan, meta, onSent }) {
+  const [preview, setPreview] = useState(null);
+  const [log, setLog] = useState([]);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState({ ok: "", err: "" });
+
+  const load = () => {
+    api(`/messaging/preview?loan=${loan.id}`).then(setPreview).catch(() => setPreview(null));
+    api(`/messaging/log?loan=${loan.id}`).then(setLog).catch(() => setLog([]));
+  };
+  useEffect(() => { setConfirming(false); setMsg({ ok: "", err: "" }); load(); }, [loan.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function send() {
+    setBusy(true); setMsg({ ok: "", err: "" });
+    try {
+      await api("/messaging/sms", { method: "POST", body: { loan: loan.id } });
+      setMsg({ ok: "SMS sent to the borrower.", err: "" });
+      onSent?.();
+    } catch (e) { setMsg({ ok: "", err: e.message }); }
+    finally { setBusy(false); setConfirming(false); load(); }
+  }
+
+  const off = meta && !meta.sms_enabled;
+  return (
+    <section>
+      <h3>Messages</h3>
+      {off && <p className="muted small">SMS sending is switched off on this server.</p>}
+      {!off && preview && preview.problem && <p className="muted small">SMS: {preview.problem}</p>}
+      {!off && preview && !preview.problem && (
+        <div className="msgbox">
+          <div className="muted small">{preview.name} · what the borrower will receive</div>
+          <p className="msgtext">{preview.text}</p>
+          {!confirming && <button disabled={busy} onClick={() => setConfirming(true)}>Send SMS</button>}
+          {confirming && (
+            <div className="row">
+              <span className="small">Send this to the borrower now?</span>
+              <button disabled={busy} onClick={send}>{busy ? "Sending…" : "Yes, send"}</button>
+              <button className="ghost" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+            </div>
+          )}
+        </div>
+      )}
+      {msg.ok && <p role="status" className="small">{msg.ok}</p>}
+      {msg.err && <p className="error" role="alert">{msg.err}</p>}
+      {log.length > 0 && (
+        <ul className="msglog">
+          {log.slice(0, 5).map((m) => (
+            <li key={m.id}>
+              <span className={`chip ${m.state === "sent" ? "kept" : "broken"}`}>{m.state === "sent" ? "Sent" : "Failed"}</span>{" "}
+              <span className="small">{fmtTime(m.at)} · {m.template} · {m.sent_by || "—"}</span>
+              {m.state === "failed" && m.error && <div className="error small">{m.error}</div>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">WhatsApp messages are not switched on yet.</p>
+    </section>
   );
 }
 
