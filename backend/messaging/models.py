@@ -78,3 +78,40 @@ class MessageLog(models.Model):
     class Meta:
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["loan", "-created_at"])]
+
+
+class WhatsappMessage(models.Model):
+    """One WhatsApp message with a borrower, either way. The number is never stored (only its last four digits); replies go to the
+    loan's own borrower number."""
+
+    class Direction(models.TextChoices):
+        OUT = "out", "Sent"
+        IN = "in", "Received"
+
+    loan = models.ForeignKey("loans.Loan", null=True, blank=True, on_delete=models.SET_NULL, related_name="whatsapp")
+    direction = models.CharField(max_length=3, choices=Direction.choices)
+    kind = models.CharField(max_length=10, default="text", help_text="template, text or media")
+    template_key = models.CharField(max_length=40, blank=True)
+    text = models.TextField(blank=True)
+    state = models.CharField(max_length=12, default="sent", help_text="sent, delivered, read, failed (out) or received (in)")
+    provider_ref = models.CharField(max_length=120, blank=True, db_index=True)
+    error = models.CharField(max_length=200, blank=True)
+    mobile_last4 = models.CharField(max_length=4, blank=True)
+    sent_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    seen = models.BooleanField(default=True, help_text="inbound: an agent has opened it")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["loan", "created_at"])]
+
+
+class WhatsappWebhookLog(models.Model):
+    """The last webhook bodies MSG91 sent us, long digit strings masked, kept so the real shape can be checked. Pruned to 200 rows."""
+
+    body = models.TextField()
+    handled = models.CharField(max_length=60, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]

@@ -106,7 +106,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsSettled"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "sms": "30/min", "dialer_login": "5/min"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "sms": "30/min", "whatsapp": "60/min", "dialer_login": "5/min"},
     "NUM_PROXIES": int(env("NUM_PROXIES", "1")),  # nginx. Use 2 when Cloudflare is switched on.
     "DEFAULT_PAGINATION_CLASS": "loans.pagination.Page",
     "PAGE_SIZE": 50,
@@ -152,6 +152,16 @@ MSG91_SMS_ENABLED = env_bool("MSG91_SMS_ENABLED", False)
 PAYMENT_LINK_DEFAULT = env("PAYMENT_LINK_DEFAULT", "")
 # Most SMS one loan may get in a day (all templates together). Sending the same template again needs a confirmation first.
 SMS_MAX_PER_LOAN_PER_DAY = int(env("SMS_MAX_PER_LOAN_PER_DAY", "3"))
+
+# ---- WhatsApp through MSG91. OFF until MSG91_WHATSAPP_ENABLED=true. The two URLs are from memory of MSG91's API and have not been
+# checked against its documentation: if MSG91 refuses a request, correct them here without a code change.
+MSG91_WHATSAPP_ENABLED = env_bool("MSG91_WHATSAPP_ENABLED", False)
+MSG91_WHATSAPP_NUMBER = env("MSG91_WHATSAPP_NUMBER", "")      # the business number connected to MSG91, digits with country code
+MSG91_WHATSAPP_TEMPLATE_URL = env("MSG91_WHATSAPP_TEMPLATE_URL", "https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/")
+MSG91_WHATSAPP_TEXT_URL = env("MSG91_WHATSAPP_TEXT_URL", "https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/")
+WHATSAPP_WEBHOOK_TOKEN = env("WHATSAPP_WEBHOOK_TOKEN", "")    # secret in the webhook address MSG91 calls; empty = webhook refuses everything
+WHATSAPP_SESSION_HOURS = int(env("WHATSAPP_SESSION_HOURS", "24"))   # WhatsApp lets us send free text for 24 h after the customer last wrote
+WHATSAPP_MAX_PER_LOAN_PER_DAY = int(env("WHATSAPP_MAX_PER_LOAN_PER_DAY", "3"))   # template messages only
 
 # ---- LMS (read-only MySQL)
 LMS_DB = {

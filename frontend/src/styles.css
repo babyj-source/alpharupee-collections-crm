@@ -97,3 +97,13 @@ button.danger:disabled { opacity: .6; }
 
 .warn { color: #8a5a00; margin: 4px 0 8px; }
 @media (prefers-color-scheme: dark) { .warn { color: #f0c36a; } }
+
+/* WhatsApp chat */
+.wa h4 { margin: 12px 0 6px; font-size: .95rem; }
+.chat { display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; padding: 8px; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; }
+.bubble { max-width: 82%; padding: 6px 10px; border-radius: 12px; background: var(--line); align-self: flex-start; }
+.bubble.out { align-self: flex-end; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.bubble.failed { background: color-mix(in srgb, var(--err) 22%, transparent); }
+.bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-meta { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+.chat-input input { flex: 1 1 auto; min-width: 0; }

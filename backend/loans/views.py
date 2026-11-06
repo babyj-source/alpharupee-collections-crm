@@ -400,6 +400,7 @@ class MetaView(APIView):
             "ptp_reasons": [{"code": k, "label": v} for k, v in PTP_REASONS.items()],
             "dialer_enabled": bool(settings.SMARTFLO_ENABLED and settings.SMARTFLO_API_TOKEN),
             "sms_enabled": bool(settings.MSG91_SMS_ENABLED and settings.MSG91_AUTHKEY),
+            "whatsapp_enabled": bool(settings.MSG91_WHATSAPP_ENABLED and settings.MSG91_AUTHKEY and settings.MSG91_WHATSAPP_NUMBER),
         })
 
 

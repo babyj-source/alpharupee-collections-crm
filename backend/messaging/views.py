@@ -1,6 +1,15 @@
+import hmac
+import json
+from datetime import timedelta
+
+from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
@@ -9,8 +18,9 @@ from accounts.permissions import IsAdmin, IsHead
 
 from loans.views import scoped
 
-from .models import MessageLog, SmsTemplate, WhatsappTemplate
+from .models import MessageLog, SmsTemplate, WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
 from .service import SendRefused, preview_sms, send_sms_for_loan
+from .whatsapp import handle_webhook, log_webhook, preview_whatsapp, send_chat_text, send_whatsapp_for_loan, session_open
 
 
 class TemplateSerializer(serializers.ModelSerializer):
@@ -143,3 +153,133 @@ class PreviewView(APIView):
             return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
         loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
         return Response(preview_sms(loan))
+
+
+# ---------------------------------------------------------------------------------------------------------------- WhatsApp
+def _wa_row(m):
+    return {"id": m.pk, "direction": m.direction, "kind": m.kind, "text": m.text, "state": m.state, "error": m.error,
+            "by": (m.sent_by.name if m.sent_by else "") if m.direction == "out" else "Customer", "at": m.created_at}
+
+
+def _loan_arg(request, data=None):
+    src = data if data is not None else request.query_params
+    try:
+        return get_object_or_404(scoped(request.user, grants=True), pk=int(src.get("loan")))
+    except (TypeError, ValueError):
+        return None
+
+
+class WhatsappPreviewView(APIView):
+    def get(self, request):
+        loan = _loan_arg(request)
+        if loan is None:
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        key = (request.query_params.get("template") or "").strip() or None
+        return Response(preview_whatsapp(loan, key if request.user.is_head else None))
+
+
+class WhatsappSendView(APIView):
+    """Send an approved WhatsApp template for a loan. Agents cannot choose the template or the link (as with SMS)."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "whatsapp"
+
+    def post(self, request):
+        loan = _loan_arg(request, request.data)
+        if loan is None:
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        key = link = None
+        if request.user.is_head:
+            key = (request.data.get("template") or "").strip() or None
+            link = (request.data.get("link") or "").strip() or None
+        try:
+            m = send_whatsapp_for_loan(loan, request.user, template_key=key, link=link, again=request.data.get("again") is True)
+        except SendRefused as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        audit(request, "whatsapp_sent" if m.state == "sent" else "whatsapp_failed", user=request.user, object_type="loan", object_id=loan.pk,
+              detail=f"{m.template_key} {m.error}".strip())
+        if m.state != "sent":
+            return Response({"detail": f"MSG91 did not accept the message. {m.error}", "message": _wa_row(m)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(_wa_row(m), status=status.HTTP_201_CREATED)
+
+
+class ChatView(APIView):
+    """The WhatsApp conversation on one account. Opening it marks the customer's messages as read."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "whatsapp"
+
+    def get(self, request):
+        loan = _loan_arg(request)
+        if loan is None:
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        WhatsappMessage.objects.filter(loan=loan, direction="in", seen=False).update(seen=True)
+        rows = list(WhatsappMessage.objects.filter(loan=loan).select_related("sent_by").order_by("-created_at", "-id")[:100])[::-1]
+        ok, last = session_open(loan)
+        closes = last.created_at + timedelta(hours=settings.WHATSAPP_SESSION_HOURS) if ok else None
+        return Response({"messages": [_wa_row(m) for m in rows], "window_open": ok, "window_closes_at": closes})
+
+    def post(self, request):
+        loan = _loan_arg(request, request.data)
+        if loan is None:
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            m = send_chat_text(loan, request.user, request.data.get("text"))
+        except SendRefused as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        audit(request, "whatsapp_chat_sent" if m.state == "sent" else "whatsapp_chat_failed", user=request.user, object_type="loan", object_id=loan.pk)
+        if m.state != "sent":
+            return Response({"detail": f"MSG91 did not accept the message. {m.error}", "message": _wa_row(m)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(_wa_row(m), status=status.HTTP_201_CREATED)
+
+
+class InboxView(APIView):
+    """Conversations on the user's accounts, newest first, with how many customer messages are unread."""
+
+    def get(self, request):
+        msgs = (WhatsappMessage.objects.filter(loan__in=scoped(request.user).values("pk"))
+                .select_related("loan").order_by("-created_at", "-id")[:600])
+        seen, out = {}, []
+        for m in msgs:
+            row = seen.get(m.loan_id)
+            if row is None:
+                row = seen[m.loan_id] = {"loan_id": m.loan_id, "account_id": m.loan.account_id, "borrower_name": m.loan.borrower_name,
+                                         "last_text": m.text[:120], "last_direction": m.direction, "last_at": m.created_at, "unread": 0}
+                out.append(row)
+            if m.direction == "in" and not m.seen:
+                row["unread"] += 1
+        return Response(out[:100])
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class WhatsappWebhookView(APIView):
+    """MSG91 calls this with incoming customer messages and delivery updates. No login; a secret token in the address protects it."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        want = settings.WHATSAPP_WEBHOOK_TOKEN
+        got = request.query_params.get("token", "")
+        if not want or not hmac.compare_digest(want.encode(), got.encode()):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        raw = request.body.decode("utf-8", "replace")
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = {}
+        try:
+            handled = handle_webhook(payload)
+        except Exception:      # never let one odd payload make MSG91 retry forever; the body is in the log for us to look at
+            handled = "error"
+        log_webhook(raw, handled)
+        return Response({"ok": True})
+
+
+class WhatsappWebhookLogView(APIView):
+    """Admin: the last webhook bodies MSG91 sent (long digit strings masked), to check the real shape."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        return Response([{"at": w.created_at, "handled": w.handled, "body": w.body} for w in WhatsappWebhookLog.objects.all()[:30]])
