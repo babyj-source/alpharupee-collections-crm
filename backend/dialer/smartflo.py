@@ -117,13 +117,22 @@ class SmartfloClient:
         return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number})
 
     def click_to_call(self, token, agent_number, destination):
-        data = self._call("POST", "/v1/click_to_call", token,
-                          json={"async": 1, "agent_number": agent_number, "destination_number": destination, "type": "dialer"})
+        body = {"agent_number": agent_number, "destination_number": destination, "async": 1}
+        if settings.SMARTFLO_CALLER_ID:
+            body["caller_id"] = settings.SMARTFLO_CALLER_ID          # the account's outgoing number, as in Smartflo's own example
+            body["call_timeout"] = settings.SMARTFLO_CALL_TIMEOUT
+        if settings.SMARTFLO_CLICK_TO_CALL_TYPE:
+            body["type"] = settings.SMARTFLO_CLICK_TO_CALL_TYPE
+        data = self._call("POST", "/v1/click_to_call", token, json=body)
         # Smartflo can answer HTTP 200 and still say it did not place the call. Log only the verdict fields (never numbers).
         d = data if isinstance(data, dict) else {}
         verdict = {k: d[k] for k in ("success", "status", "message", "error", "code") if k in d and not isinstance(d[k], (dict, list))}
         log.info("Smartflo click_to_call replied: %s", verdict or "(no verdict fields)")
-        failed = d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure")
+        text = str(d.get("message") or d.get("error") or "")
+        # An explicit failure flag, or (when Smartflo gives no success flag at all) a message that reads as a refusal,
+        # for example "No agent session details were found, please check."
+        refusal = "success" not in d and re.search(r"\b(no|not|fail\w*|invalid|error|unable|cannot|denied)\b", text, re.I)
+        failed = d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure") or bool(refusal)
         if failed:
             reason = re.sub(r"\s+", " ", str(d.get("message") or d.get("error") or "no reason given"))[:160]
             raise SmartfloError(f"Smartflo did not place the call. {reason}")
