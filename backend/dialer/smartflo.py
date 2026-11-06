@@ -2,10 +2,14 @@
 because they have not been checked against the live service yet (see docs/PHASE1_INCREMENT4.md).
 
 Never logs or returns tokens, passwords, request bodies or phone numbers."""
+import logging
 import re
 
 import requests
 from django.conf import settings
+
+
+log = logging.getLogger(__name__)
 
 
 class SmartfloError(Exception):
@@ -113,8 +117,17 @@ class SmartfloClient:
         return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number})
 
     def click_to_call(self, token, agent_number, destination):
-        return self._call("POST", "/v1/click_to_call", token,
+        data = self._call("POST", "/v1/click_to_call", token,
                           json={"async": 1, "agent_number": agent_number, "destination_number": destination, "type": "dialer"})
+        # Smartflo can answer HTTP 200 and still say it did not place the call. Log only the verdict fields (never numbers).
+        d = data if isinstance(data, dict) else {}
+        verdict = {k: d[k] for k in ("success", "status", "message", "error", "code") if k in d and not isinstance(d[k], (dict, list))}
+        log.info("Smartflo click_to_call replied: %s", verdict or "(no verdict fields)")
+        failed = d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure")
+        if failed:
+            reason = re.sub(r"\s+", " ", str(d.get("message") or d.get("error") or "no reason given"))[:160]
+            raise SmartfloError(f"Smartflo did not place the call. {reason}")
+        return data
 
 
 _ID_KEYS = ("call_id", "unique_id", "uuid", "callid", "id")

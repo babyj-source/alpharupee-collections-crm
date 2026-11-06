@@ -577,6 +577,17 @@ class ClientTests(Base):
         c.bulk_add_leads("174743", [{"field_0": "9"}])
         self.assertEqual((h.sent["url"].endswith("/v1/broadcast/lead/174743"), h.sent["json"]["duplicate_option"]), (True, "overwrite"))
 
+    @ON
+    def test_click_to_call_200_with_a_failure_body_is_an_error_not_a_success(self):
+        for body in ({"success": False, "message": "Agent is not logged in"}, {"status": "failed", "message": "Agent is not logged in"}):
+            with self.assertRaisesMessage(SmartfloError, "Agent is not logged in"):
+                SmartfloClient(self.Http(body=body)).click_to_call("T1", "0606", "9876543210")
+        ok = SmartfloClient(self.Http(body={"success": True, "message": "call queued", "data": {"customer": "9876543210"}}))
+        with self.assertLogs("dialer.smartflo", level="INFO") as cm:
+            self.assertTrue(ok.click_to_call("T1", "0606", "9876543210")["success"])
+        self.assertIn("call queued", cm.output[0])
+        self.assertNotIn("9876543210", cm.output[0])       # the number never reaches the log
+
     class PickyHttp(Http):
         """Rejects the token unless it arrives in the form `want` ('plain' or 'bearer')."""
         def __init__(self, want, msg="Deleted or blacklisted token provided"):
