@@ -1,12 +1,16 @@
 from django.shortcuts import get_object_or_404
-from rest_framework import serializers
+from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from accounts.models import audit
 from accounts.permissions import IsAdmin, IsHead
 
-from .models import SmsTemplate, WhatsappTemplate
+from loans.views import scoped
+
+from .models import MessageLog, SmsTemplate, WhatsappTemplate
+from .service import SendRefused, send_sms_for_loan
 
 
 class TemplateSerializer(serializers.ModelSerializer):
@@ -81,3 +85,49 @@ class WhatsappUpdateView(APIView):
         audit(request, "whatsapp_template_updated", user=request.user, object_type="whatsapp_template", object_id=t.pk,
               detail=f"{key} active={t.active} image={'set' if t.header_image_url else 'none'}")
         return Response(WhatsappSerializer(t).data)
+
+
+def _log_row(m):
+    return {"id": m.pk, "channel": m.channel, "template": m.template_key, "state": m.state, "text": m.text,
+            "error": m.error, "sent_by": m.sent_by.name if m.sent_by else "", "at": m.created_at, "to": "xxxxxx" + m.mobile_last4}
+
+
+class SendSmsView(APIView):
+    """Send the right SMS for a loan. Agents can only do this for their own accounts and cannot choose the template or the link
+    (the template follows days past due; the link is the CRM's own). Head and Admin may pick a template or give a link."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "sms"
+
+    def post(self, request):
+        try:
+            loan_id = int(request.data.get("loan"))
+        except (TypeError, ValueError):
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
+        key = link = None
+        if request.user.is_head:
+            key = (request.data.get("template") or "").strip() or None
+            link = (request.data.get("link") or "").strip() or None
+        try:
+            m = send_sms_for_loan(loan, request.user, template_key=key, link=link)
+        except SendRefused as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        audit(request, "sms_sent" if m.state == "sent" else "sms_failed", user=request.user, object_type="loan", object_id=loan.pk,
+              detail=f"{m.template_key} {m.error}".strip())
+        if m.state != "sent":
+            return Response({"detail": f"MSG91 did not accept the message. {m.error}", "message": _log_row(m)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(_log_row(m), status=status.HTTP_201_CREATED)
+
+
+class MessageLogView(APIView):
+    """Messages sent for one loan, newest first (only loans the user may see)."""
+
+    def get(self, request):
+        try:
+            loan_id = int(request.query_params.get("loan"))
+        except (TypeError, ValueError):
+            return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=loan_id)
+        rows = MessageLog.objects.filter(loan=loan).select_related("sent_by")[:30]
+        return Response([_log_row(m) for m in rows])

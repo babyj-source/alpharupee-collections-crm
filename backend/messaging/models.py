@@ -54,3 +54,27 @@ class WhatsappTemplate(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class MessageLog(models.Model):
+    """Every SMS the CRM tried to send. The borrower's number is never stored, only its last four digits."""
+
+    class State(models.TextChoices):
+        SENT = "sent", "Sent to MSG91"
+        FAILED = "failed", "Failed"
+
+    loan = models.ForeignKey("loans.Loan", on_delete=models.CASCADE, related_name="messages")
+    channel = models.CharField(max_length=10, default="sms")
+    template_key = models.CharField(max_length=40)
+    msg91_template_id = models.CharField(max_length=40)
+    mobile_last4 = models.CharField(max_length=4, blank=True)
+    text = models.TextField(blank=True, help_text="what the borrower was sent")
+    state = models.CharField(max_length=10, choices=State.choices)
+    provider_ref = models.CharField(max_length=120, blank=True, help_text="MSG91 request id")
+    error = models.CharField(max_length=200, blank=True)
+    sent_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["loan", "-created_at"])]
