@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import calllog, views
 
 urlpatterns = [
     path("status", views.StatusView.as_view()),
@@ -14,6 +14,8 @@ urlpatterns = [
     path("campaigns/<str:key>", views.CampaignUpdateView.as_view()),
     path("dispositions", views.DispositionMapView.as_view()),
     path("agents/<int:user_id>", views.AgentProfileView.as_view()),
+    path("calls", calllog.CallLogView.as_view()),
+    path("calls/recording", calllog.RecordingView.as_view()),
     path("check", views.CheckView.as_view()),
     path("session", views.SessionView.as_view()),
     path("session/start", views.SessionStartView.as_view()),

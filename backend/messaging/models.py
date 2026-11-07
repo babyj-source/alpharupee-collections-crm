@@ -46,6 +46,7 @@ class WhatsappTemplate(models.Model):
     has_image_header = models.BooleanField(default=False)
     header_image_url = models.URLField(max_length=500, blank=True, help_text="public https image shown in the header")
     active = models.BooleanField(default=True)
+    auto_send = models.BooleanField(default=False, help_text="send this message automatically, once a day, to every overdue account (manage.py auto_whatsapp)")
     sort = models.IntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 

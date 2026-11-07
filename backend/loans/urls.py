@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import bulk, mis, priority, views
+from . import bulk, mis, priority, reports, views
 
 urlpatterns = [
     path("meta", views.MetaView.as_view()),
@@ -23,5 +23,10 @@ urlpatterns = [
     path("references/csv", bulk.ReferenceCsvView.as_view()),
     path("agents", views.AgentListView.as_view()),
     path("priority", priority.PriorityView.as_view()),
+    path("priority/weights", priority.WeightsView.as_view()),
     path("mis", mis.MisView.as_view()),
+    path("performance", reports.PerformanceView.as_view()),
+    path("audit", reports.AuditView.as_view()),
+    path("scripts", reports.ScriptListView.as_view()),
+    path("scripts/<str:key>", reports.ScriptUpdateView.as_view()),
 ]

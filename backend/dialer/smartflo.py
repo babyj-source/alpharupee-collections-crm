@@ -125,6 +125,14 @@ class SmartfloClient:
         return self._call("POST", "/v1/dialer/disposition_status", settings.SMARTFLO_API_TOKEN, bearer=True,
                           json={"name": name, "code": code, "dispositionList": str(list_id)})
 
+    def call_records(self, from_date, to_date, page=1, limit=50, call_id=None, call_type=None, direction=None):
+        """Call detail records (GET /v1/call/records): dates as 'Y-m-d H:i:s'. Each record may carry a recording_url."""
+        params = {"from_date": from_date, "to_date": to_date, "page": str(page), "limit": str(limit)}
+        for k, v in (("call_id", call_id), ("call_type", call_type), ("direction", direction)):
+            if v:
+                params[k] = v
+        return self._call("GET", "/v1/call/records", settings.SMARTFLO_API_TOKEN, bearer=True, params=params)
+
     def delete_leads(self, list_id, field, values):
         """Remove leads from a lead list by the value of one column (for example field_0 = mobile)."""
         return self._call("DELETE", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
