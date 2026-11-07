@@ -44,14 +44,25 @@ def _check():
         raise EasebuzzError("Easebuzz is not configured on this server.")
 
 
+def _detail(resp, body):
+    """What Easebuzz said, shortened, so a refusal can be understood. Easebuzz's answer never contains our salt."""
+    if isinstance(body, dict):
+        parts = [f"{k}: {v}" for k, v in body.items() if k != "status" and v not in (None, "", [], {})]
+        text = "; ".join(parts)
+    else:
+        text = str(body)
+    return text[:300]
+
+
 def _answer(resp):
     try:
         body = resp.json()
     except ValueError:
         raise EasebuzzError(f"Easebuzz sent an answer the CRM cannot read (HTTP {resp.status_code}).")
     if resp.status_code != 200 or not isinstance(body, dict) or not body.get("status"):
-        msg = body.get("message") if isinstance(body, dict) else ""
-        raise EasebuzzError(f"Easebuzz did not accept the request{': ' + str(msg)[:160] if msg else ''} (HTTP {resp.status_code}).")
+        detail = _detail(resp, body)
+        log.warning("easebuzz refused (HTTP %s): %s", resp.status_code, detail)
+        raise EasebuzzError(f"Easebuzz did not accept the request (HTTP {resp.status_code}){': ' + detail if detail else ''}.")
     return body.get("data") or {}
 
 

@@ -110,6 +110,15 @@ class CreateTests(P):
                     create_for_loan(self.l2, self.a2)
         self.assertEqual(PaymentLink.objects.count(), 0)
 
+    def test_the_refusal_text_carries_easebuzzs_reason_but_never_the_salt(self):
+        with mock.patch("payments.easebuzz.requests.post", return_value=Resp({"status": False, "message": "Invalid hash", "errors": {"sub_merchant_id": ["not found"]}}, 400)):
+            with self.assertRaises(LinkRefused) as cm:
+                create_for_loan(self.l2, self.a2)
+        self.assertIn("HTTP 400", str(cm.exception))
+        self.assertIn("Invalid hash", str(cm.exception))
+        self.assertIn("sub_merchant_id", str(cm.exception))
+        self.assertNotIn("SALT1", str(cm.exception))
+
     def test_network_failure_is_a_clean_refusal(self):
         import requests
         with mock.patch("payments.easebuzz.requests.post", side_effect=requests.ConnectionError("boom SALT1")):
