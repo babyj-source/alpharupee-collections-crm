@@ -1,6 +1,6 @@
 """Easebuzz EasyCollect (payment links), from https://docs.easebuzz.in : "Sub-merchant Create/Update Link" and "Get Easycollect Link".
 
-Create: POST {base}/easycollect/v1/create, JSON, hash = sha512(key|merchant_txn|name|email|phone|amount|udf1..udf5|message|salt).
+Create: POST {base}/easycollect/v1/create (same call for an ordinary merchant; `sub_merchant_id` is sent only when configured), JSON, hash = sha512(key|merchant_txn|name|email|phone|amount|udf1..udf5|message|salt).
 Status: GET {base}/easycollect/v1/get?key=&merchant_txn=&hash=  with hash = sha512(key|merchant_txn|salt).
 Sandbox base is https://testdashboard.easebuzz.in, production https://dashboard.easebuzz.in. The salt never leaves the server and is never logged."""
 import hashlib
@@ -21,7 +21,7 @@ class EasebuzzError(Exception):
 
 
 def enabled():
-    return bool(settings.EASEBUZZ_ENABLED and settings.EASEBUZZ_KEY and settings.EASEBUZZ_SALT and settings.EASEBUZZ_SUB_MERCHANT_ID)
+    return bool(settings.EASEBUZZ_ENABLED and settings.EASEBUZZ_KEY and settings.EASEBUZZ_SALT)     # the sub-merchant id is optional
 
 
 def _sha512(*parts):
@@ -73,7 +73,8 @@ def create_link(*, merchant_txn, name, phone, amount, udf1, udf2, message, expir
          "udf1": udf1, "udf2": udf2, "udf3": "", "udf4": "", "udf5": "", "message": message}
     p["hash"] = create_hash(p)
     p["expiry_date"] = expiry_date
-    p["sub_merchant_id"] = settings.EASEBUZZ_SUB_MERCHANT_ID
+    if settings.EASEBUZZ_SUB_MERCHANT_ID:      # only for sub-aggregator merchants; Easebuzz refuses it (ECSUBME03) for an ordinary merchant
+        p["sub_merchant_id"] = settings.EASEBUZZ_SUB_MERCHANT_ID
     try:
         resp = requests.post(f"{settings.EASEBUZZ_BASE_URL}/easycollect/v1/create", json=p, headers={"Accept": "application/json"}, timeout=20)
     except requests.RequestException as exc:

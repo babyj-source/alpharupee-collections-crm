@@ -154,8 +154,8 @@ PAYMENT_LINK_DEFAULT = env("PAYMENT_LINK_DEFAULT", "")
 # Most SMS one loan may get in a day (all templates together). Sending the same template again needs a confirmation first.
 SMS_MAX_PER_LOAN_PER_DAY = int(env("SMS_MAX_PER_LOAN_PER_DAY", "3"))
 
-# ---- Easebuzz EasyCollect payment links. OFF until EASEBUZZ_ENABLED=true and the key, salt and sub-merchant id are set
-# (deploy/server/set-easebuzz.sh). The base is the SANDBOX until it is set to https://dashboard.easebuzz.in for production.
+# ---- Easebuzz EasyCollect payment links. OFF until EASEBUZZ_ENABLED=true and the key and salt are set
+# (deploy/server/set-easebuzz.sh). The sub-merchant id is only for sub-aggregator merchants and may stay empty. The base is the SANDBOX until it is set to https://dashboard.easebuzz.in for production.
 EASEBUZZ_ENABLED = env_bool("EASEBUZZ_ENABLED", False)
 EASEBUZZ_KEY = env("EASEBUZZ_KEY", "")
 EASEBUZZ_SALT = env("EASEBUZZ_SALT", "")
