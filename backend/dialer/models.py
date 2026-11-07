@@ -84,3 +84,10 @@ class PushedLead(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["campaign", "loan", "pushed_on"], name="uniq_pushed_lead")]
         indexes = [models.Index(fields=["pushed_on", "campaign"])]
+
+
+class SmartfloSetting(models.Model):
+    """Ids the CRM created or found in Smartflo during set-up (for example the call-outcomes list)."""
+
+    key = models.CharField(max_length=40, unique=True)
+    value = models.CharField(max_length=120, blank=True)

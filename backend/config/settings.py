@@ -136,6 +136,9 @@ SMARTFLO_CALL_TIMEOUT = int(env("SMARTFLO_CALL_TIMEOUT", "300"))
 # Ends a live call from the agent screen. NOT yet checked against Smartflo's documentation: if Smartflo refuses it the agent
 # is told to end the call on the phone, and the path or body can be corrected here without a code change.
 SMARTFLO_HANGUP_PATH = env("SMARTFLO_HANGUP_PATH", "/v1/call/hangup")
+# Saves a call outcome (the "Disposition Detail Update" page of Smartflo's API reference shows this URL). The CRM used the older
+# /v1/dialer/disposition_details_update from the vendor's Postman collection; if Smartflo answers 404 the old path is tried once.
+SMARTFLO_DISPOSITION_PATH = env("SMARTFLO_DISPOSITION_PATH", "/v1/dialer/store-disposition")
 
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")

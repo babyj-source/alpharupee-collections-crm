@@ -68,7 +68,6 @@ export default function Dialer() {
   };
 
   if (!status) return <p className="muted">Loading…</p>;
-  const startable = pools.filter((p) => p.active);
   const s = session;
 
   return (
@@ -77,25 +76,45 @@ export default function Dialer() {
       {notice && <p role="status">{notice}</p>}
 
       {!s?.active && (
-        <form className="card" onSubmit={start}>
-          <h2>Start a campaign</h2>
-          {!status.enabled && <p className="error">The dialler is switched off on this server.</p>}
-          {status.enabled && !status.agent_ready && <p className="error">Your Smartflo login id is not set up yet. Ask the Admin to add it under Campaigns, Setup.</p>}
-          {status.enabled && !status.in_window && <p className="error">Calling is only allowed between {status.window}.</p>}
-          {s?.expired && <p className="muted">Your Smartflo session ran out (they last about an hour). Start again to keep calling.</p>}
-          <label>Campaign
-            <select value={campaign} onChange={(e) => setCampaign(e.target.value)} required>
-              <option value="">Select…</option>
-              {startable.map((p) => <option key={p.key} value={p.key}>{p.label} · {p.mine} of your customers</option>)}
-            </select>
-          </label>
-          {startable.length === 0 && <p className="muted small">No campaign is switched on yet.</p>}
-          <label>Your Smartflo password
-            <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          </label>
-          <p className="muted small">Used once to sign you in to Smartflo. The CRM never stores it. When you start, your customers in this campaign are sent to Smartflo and it begins ringing them for you. Log an outcome after every call to get the next one.</p>
-          <button disabled={busy || !status.enabled || !status.agent_ready || !status.in_window}>{busy ? "Starting…" : "Start campaign"}</button>
-        </form>
+        <>
+          <section className="card">
+            <h2>Campaigns</h2>
+            {!status.enabled && <p className="error">The dialler is switched off on this server.</p>}
+            {status.enabled && !status.agent_ready && <p className="error">Your Smartflo login id is not set up yet. Ask the Admin to add it under Campaigns, Setup.</p>}
+            {status.enabled && !status.in_window && <p className="error">Calling is only allowed between {status.window}.</p>}
+            {s?.expired && <p className="muted">Your Smartflo session ran out (they last about an hour). Start again to keep calling.</p>}
+            <p className="muted small">Pick a campaign, then start it. Your own customers in that campaign are sent to Smartflo, and it rings them one by one.</p>
+            <ul className="camps" role="radiogroup" aria-label="Campaigns">
+              {pools.map((p) => {
+                const ready = p.active && p.configured;
+                const why = !p.active ? "Switched off by your head" : !p.configured ? "Not connected to Smartflo yet. Ask the Admin." : "";
+                return (
+                  <li key={p.key} className={`camp${campaign === p.key ? " on" : ""}${ready ? "" : " off"}`}>
+                    <label>
+                      <input type="radio" name="campaign" value={p.key} checked={campaign === p.key} disabled={!ready} onChange={() => setCampaign(p.key)} />
+                      <span className="camp-main">
+                        <strong>{p.label}</strong>
+                        <span className="muted small">{num(p.mine)} of your customers · {num(p.eligible)} in all</span>
+                      </span>
+                      {ready ? <span className="chip ok">Ready</span> : <span className="chip today">{why}</span>}
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+            {pools.length === 0 && <p className="muted small">No campaigns found.</p>}
+            {pools.length > 0 && !pools.some((p) => p.active && p.configured) && (
+              <p className="muted small">No campaign is ready yet. Your head switches a campaign on, and the Admin connects it to Smartflo, under Campaigns.</p>
+            )}
+          </section>
+          <form className="card" onSubmit={start}>
+            <label>Your Smartflo password
+              <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            </label>
+            <p className="muted small">Used once to sign you in to Smartflo. The CRM never stores it. Log an outcome after every call to get the next one.</p>
+            <button disabled={busy || !campaign || !status.enabled || !status.agent_ready || !status.in_window}>{busy ? "Starting…" : campaign ? `Start ${pools.find((p) => p.key === campaign)?.label || "campaign"}` : "Pick a campaign first"}</button>
+          </form>
+        </>
       )}
 
       {s?.active && (

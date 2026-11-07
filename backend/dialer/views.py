@@ -24,6 +24,7 @@ from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITIO
 
 from .models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap, PushedLead
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
+from . import setup as smartflo_setup
 from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls
 
 TOKEN_MINUTES = 55  # Smartflo agent tokens last one hour
@@ -166,12 +167,69 @@ class SetupView(APIView):
         maps = {m.crm_code: m.smartflo_status_id for m in DispositionMap.objects.all()}
         agents = User.objects.filter(role=Role.AGENT, is_active=True).order_by("name")
         return Response({
-            "status": {"enabled": bool(settings.SMARTFLO_ENABLED), "token_set": bool(settings.SMARTFLO_API_TOKEN)},
+            "status": {"enabled": bool(settings.SMARTFLO_ENABLED), "token_set": bool(settings.SMARTFLO_API_TOKEN),
+                       "caller_id_set": bool(settings.SMARTFLO_CALLER_ID), "outcome_list_id": smartflo_setup.outcome_list_id()},
             "dispositions": [{"code": k, "label": v[0], "smartflo_status_id": maps.get(k, "")} for k, v in DISPOSITIONS.items()],
             "agents": [{"id": a.pk, "name": a.name, "email": a.email,
                         "smartflo_email": profiles[a.pk].smartflo_email if a.pk in profiles else "",
                         "agent_number": profiles[a.pk].agent_number if a.pk in profiles else ""} for a in agents],
         })
+
+
+class SmartfloUsersView(APIView):
+    """Admin: the users in the Smartflo account (name, login id, agent number) so CRM agents can be matched to them."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        if not enabled():
+            return bad("Smartflo is switched off on this server, or no token is set.")
+        try:
+            return Response({"users": smartflo_setup.users_for_screen(get_client())})
+        except SmartfloError as exc:
+            return bad(str(exc), 502)
+
+
+class SmartfloOutcomesView(APIView):
+    """Admin: create the call-outcome list in Smartflo and save each outcome's Smartflo id."""
+
+    permission_classes = [IsAdmin]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    def post(self, request):
+        if not enabled():
+            return bad("Smartflo is switched off on this server, or no token is set.")
+        try:
+            res = smartflo_setup.provision_outcomes(get_client())
+        except smartflo_setup.SetupError as exc:
+            return bad(str(exc))
+        except SmartfloError as exc:
+            return bad(f"Smartflo refused the request. {exc}", 502)
+        audit(request, "smartflo_outcomes_created", user=request.user, detail=f"list {res['list_id']}, {res['mapped']} mapped")
+        return Response(res)
+
+
+class SmartfloCampaignView(APIView):
+    """Admin: create the lead list and the dialler campaign in Smartflo for one CRM campaign and save their ids on it."""
+
+    permission_classes = [IsAdmin]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    def post(self, request, key):
+        camp = get_object_or_404(Campaign, key=key)
+        if not enabled():
+            return bad("Smartflo is switched off on this server, or no token is set.")
+        try:
+            res = smartflo_setup.provision_campaign(camp, get_client())
+        except smartflo_setup.SetupError as exc:
+            return bad(str(exc))
+        except SmartfloError as exc:
+            return bad(f"Smartflo refused the request. {exc}", 502)
+        audit(request, "smartflo_campaign_created", user=request.user, object_type="campaign", object_id=camp.pk,
+              detail=f"{camp.key}: campaign {res['campaign_id']}, list {res['list_id']}")
+        return Response({**res, "campaign": _campaign_row(camp, request.user)})
 
 
 class CampaignUpdateView(APIView):

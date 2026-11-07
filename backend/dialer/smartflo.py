@@ -35,6 +35,9 @@ def _id(v):
     return int(v) if str(v).isdigit() else v
 
 
+LEGACY_DISPOSITION_PATH = "/v1/dialer/disposition_details_update"
+
+
 class SmartfloClient:
     def __init__(self, http=None):
         self.http = http or requests
@@ -94,6 +97,39 @@ class SmartfloClient:
         return self._call("POST", f"/v1/broadcast/lead/{list_id}", settings.SMARTFLO_API_TOKEN,
                           json={"data": rows, "duplicate_option": "overwrite"})
 
+    # ---- set-up calls (account token), from Smartflo's public API reference (docs.smartflo.tatatelebusiness.com)
+    def list_users(self, limit=200):
+        return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, bearer=True, params={"limit": limit})
+
+    def list_lead_lists(self):
+        return self._call("GET", "/v1/broadcast/lists", settings.SMARTFLO_API_TOKEN, bearer=True)
+
+    def create_lead_list(self, name, description, fields):
+        return self._call("POST", "/v1/broadcast/list", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          json={"name": name, "description": description, "field": fields, "enable_outbound_based_skill": "0"})
+
+    def list_campaigns(self):
+        return self._call("GET", "/v1/dialer/campaign", settings.SMARTFLO_API_TOKEN, bearer=True)
+
+    def create_campaign(self, body):
+        return self._call("POST", "/v1/dialer/campaign", settings.SMARTFLO_API_TOKEN, bearer=True, json=body)
+
+    def list_disposition_lists(self):
+        return self._call("GET", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True)
+
+    def create_disposition_list(self, name, description):
+        return self._call("POST", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          json={"name": name, "description": description, "status": True})
+
+    def add_disposition_status(self, list_id, name, code):
+        return self._call("POST", "/v1/dialer/disposition_status", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          json={"name": name, "code": code, "dispositionList": str(list_id)})
+
+    def delete_leads(self, list_id, field, values):
+        """Remove leads from a lead list by the value of one column (for example field_0 = mobile)."""
+        return self._call("DELETE", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          json={"field": field, "data": [str(v) for v in values]})
+
     def probe(self):
         return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, bearer=True, params={"limit": 1})  # the vendor's example uses Bearer here
 
@@ -110,8 +146,13 @@ class SmartfloClient:
         return self._call("POST", "/v1/dialer/logout", token, bearer=True, json={"campaign_id": str(campaign_id)})
 
     def disposition(self, token, unique_id, status_id):
-        return self._call("POST", "/v1/dialer/disposition_details_update", token,
-                          json={"disposition_status": str(status_id), "unique_id": str(unique_id)})
+        body = {"disposition_status": str(status_id), "unique_id": str(unique_id)}
+        try:
+            return self._call("POST", settings.SMARTFLO_DISPOSITION_PATH, token, json=body)
+        except SmartfloError as exc:
+            if exc.status != 404 or settings.SMARTFLO_DISPOSITION_PATH == LEGACY_DISPOSITION_PATH:
+                raise
+            return self._call("POST", LEGACY_DISPOSITION_PATH, token, json=body)
 
     def live_calls(self, token, agent_number):
         return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number})
@@ -204,3 +245,28 @@ def parse_live_calls(payload):
             continue
         calls.append({"id": str(cid), "number": num, "state": str(_first(it, _STATE_KEYS) or ""), "seconds": _seconds(it.get("call_time"))})
     return calls, unparsed
+
+
+def walk_dicts(payload):
+    """Every dict inside a Smartflo reply, however it is wrapped. The reply shapes for the set-up calls are not documented."""
+    if isinstance(payload, dict):
+        yield payload
+        for v in payload.values():
+            yield from walk_dicts(v)
+    elif isinstance(payload, list):
+        for v in payload:
+            yield from walk_dicts(v)
+
+
+def find_id(payload, name=None, code=None):
+    """The id of the item called `name` (or with `code`) in a reply, or None. Without a name or code: the first 'id' found."""
+    for d in walk_dicts(payload):
+        if d.get("id") in (None, "") or isinstance(d.get("id"), (dict, list)):
+            continue
+        if name is None and code is None:
+            return str(d["id"])
+        if name is not None and str(d.get("name", "")).strip().lower() == name.strip().lower():
+            return str(d["id"])
+        if code is not None and str(d.get("code", "")).strip().lower() == code.strip().lower():
+            return str(d["id"])
+    return None
