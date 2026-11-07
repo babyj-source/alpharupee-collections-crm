@@ -149,3 +149,10 @@ button.tile { text-align: left; color: var(--text); cursor: pointer; } button.ti
 /* WhatsApp call: green so it is never mistaken for the Smartflo phone Call button */
 button.wa-call { background: #1f9d55; border-color: #1f9d55; color: #fff; }
 button.wa-call:hover:not(:disabled) { background: #178045; }
+
+/* agent campaign list */
+.camps { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.camp label { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line, #d9dde3); border-radius: 8px; cursor: pointer; }
+.camp.on label { border-color: #1f6feb; background: rgba(31, 111, 235, 0.07); }
+.camp.off label { cursor: not-allowed; opacity: 0.75; }
+.camp-main { display: flex; flex-direction: column; flex: 1; }

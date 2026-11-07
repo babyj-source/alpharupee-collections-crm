@@ -45,7 +45,7 @@ export default function App() {
   const tabs = head
     ? [["dashboard", "Dashboard"], ["priority", "Priority list"], ["loans", "All accounts"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"], ["allocation", "Allocation"], ["campaigns", "Campaigns"], ["mis", "MIS"],
        ...(user.role === "admin" ? [["users", "Users and roles"]] : [])]
-    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Dialer"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"]];
+    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Campaigns"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"]];
 
   const pick = (id) => { setTab(id); setMenuOpen(false); };
 

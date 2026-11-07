@@ -321,7 +321,7 @@ class SetupTests(DialerBase):
         for u in (self.head, self.a1):
             self.assertEqual(self.api(u).get("/api/dialer/setup").status_code, 403)
         r = self.api(self.admin).get("/api/dialer/setup").json()
-        self.assertEqual((r["status"], len(r["dispositions"])), ({"enabled": True, "token_set": True}, 11))
+        self.assertEqual((r["status"], len(r["dispositions"])), ({"enabled": True, "token_set": True, "caller_id_set": False, "outcome_list_id": ""}, 11))
         self.assertNotIn("acct-token", str(r))
         self.assertEqual({a["name"] for a in r["agents"]}, {"Agent One", "Agent Two"})
 

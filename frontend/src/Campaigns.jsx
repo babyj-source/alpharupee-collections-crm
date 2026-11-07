@@ -3,7 +3,7 @@ import { api, num } from "./api.js";
 
 const hm = (t) => (t ? new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "");
 
-// The collection head's view of dialling: live monitoring and the campaigns themselves. Agents start campaigns from their own Dialer screen.
+// The collection head's view of dialling: live monitoring and the campaigns themselves. Agents start campaigns from their own Campaigns screen.
 export default function Campaigns({ user }) {
   const [tab, setTab] = useState("live");
   const admin = user.role === "admin";
@@ -15,7 +15,7 @@ export default function Campaigns({ user }) {
         {admin && <button className={tab === "setup" ? "tab on" : "tab"} onClick={() => setTab("setup")}>Setup</button>}
       </div>
       {tab === "live" && <Live />}
-      {tab === "campaigns" && <CampaignList />}
+      {tab === "campaigns" && <CampaignList admin={admin} />}
       {tab === "setup" && admin && <Setup />}
     </div>
   );
@@ -38,7 +38,7 @@ function Live() {
     <>
       {error && <p className="error" role="alert">{error}</p>}
       {!d.enabled && <p className="card muted">The dialler is switched off on this server, so no one can start a campaign. Nothing below will move.</p>}
-      <p className="muted small">Updates every few seconds · last {hm(d.as_of)}. Agents start campaigns from their own Dialer screen, which sends their customers to Smartflo.</p>
+      <p className="muted small">Updates every few seconds · last {hm(d.as_of)}. Agents start campaigns from their own Campaigns screen, which sends their customers to Smartflo.</p>
 
       <section className="card scroll">
         <h2 style={{ padding: "0 10px" }}>Campaigns today</h2>
@@ -99,7 +99,7 @@ const BLANK = { label: "", dpd_min: "0", dpd_max: "", min_overdue: "0", product_
   smartflo_campaign_id: "", smartflo_list_id: "", active: false };
 const digits = (v) => v.replace(/\D/g, "");
 
-function CampaignList() {
+function CampaignList({ admin }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -126,6 +126,16 @@ function CampaignList() {
     e.preventDefault();
     if (form.key) return run(() => api(`/dialer/campaigns/${form.key}`, { method: "PUT", body: body(form, form.custom) }), `${form.label} saved.`);
     return run(() => api("/dialer/campaigns", { method: "POST", body: body({ ...form }, true) }), `${form.label} created.`);
+  };
+  const [making, setMaking] = useState("");
+  const makeInSmartflo = async (c) => {
+    if (!window.confirm(`Create the lead list and the dialler campaign for “${c.label}” in Smartflo now? They are named “CRM ${c.label}”.`)) return;
+    setError(""); setNotice(""); setMaking(c.key);
+    try {
+      const r = await api(`/dialer/smartflo/campaign/${c.key}`, { method: "POST" });
+      setNotice(`${c.label}: ${r.steps.join(" ")} Review the campaign settings in Smartflo, then switch it on here.`);
+      await load();
+    } catch (e) { setError(e.message); await load(); } finally { setMaking(""); }
   };
   const remove = (c) => window.confirm(`Delete “${c.label}”?`) && run(() => api(`/dialer/campaigns/${c.key}`, { method: "DELETE" }), `${c.label} deleted.`);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -177,6 +187,7 @@ function CampaignList() {
                 <td>{c.active ? <span className="chip ok">Yes</span> : <span className="chip">Paused</span>}</td>
                 <td>
                   <button className="ghost" onClick={() => toggle(c)}>{c.active ? "Pause" : "Switch on"}</button>{" "}
+                  {admin && !c.configured && <><button disabled={!!making} onClick={() => makeInSmartflo(c)}>{making === c.key ? "Creating…" : "Create in Smartflo"}</button>{" "}</>}
                   <button className="ghost" onClick={() => edit(c)}>Edit</button>
                   {c.custom && <>{" "}<button className="ghost" onClick={() => remove(c)}>Delete</button></>}
                 </td>
@@ -198,6 +209,8 @@ function Setup() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [check, setCheck] = useState(null);
+  const [users, setUsers] = useState(null);
+  const [busy, setBusy] = useState(false);
   const load = useCallback(() => api("/dialer/setup").then(setD).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
 
@@ -206,6 +219,23 @@ function Setup() {
     try { await fn(); setNotice(ok); } catch (e) { setError(e.message); } // no reload: it would wipe edits made in other rows
   };
   if (!d) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  const loadUsers = async () => {
+    setError(""); setNotice("");
+    try { setUsers((await api("/dialer/smartflo/users")).users); } catch (e) { setError(e.message); }
+  };
+  const pickUser = (i, uid) => {
+    const u = (users || []).find((x) => String(x.user_id) === uid);
+    if (!u) return;
+    setD((cur) => ({ ...cur, agents: cur.agents.map((x, j) => (j === i ? { ...x, smartflo_email: u.login_id, agent_number: u.agent_number } : x)) }));
+  };
+  const makeOutcomes = async () => {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const r = await api("/dialer/smartflo/outcomes", { method: "POST" });
+      setNotice(r.steps.join(" "));
+      await load();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   const edit = (list, key, idx, field, value) => setD({ ...d, [list]: d[list].map((x, i) => (i === idx ? { ...x, [field]: value } : x)) });
 
   return (
@@ -215,7 +245,7 @@ function Setup() {
 
       <section className="card">
         <h2>Connection</h2>
-        <p>Switch: <strong>{d.status.enabled ? "ON" : "OFF"}</strong> · Account token on the server: <strong>{d.status.token_set ? "set" : "not set"}</strong></p>
+        <p>Switch: <strong>{d.status.enabled ? "ON" : "OFF"}</strong> · Account token on the server: <strong>{d.status.token_set ? "set" : "not set"}</strong> · Outgoing number: <strong>{d.status.caller_id_set ? "set" : "not set"}</strong> · Outcomes list in Smartflo: <strong>{d.status.outcome_list_id ? "made" : "not made"}</strong></p>
         <p className="muted small">The switch (<code>SMARTFLO_ENABLED</code>) and the token (<code>SMARTFLO_API_TOKEN</code>) are set on the server, never in this screen.</p>
         <div className="row">
           <button onClick={async () => setCheck(await api("/dialer/check", { method: "POST" }))}>Test connection</button>
@@ -225,18 +255,30 @@ function Setup() {
 
       <section className="card scroll">
         <h2 style={{ padding: "0 10px" }}>Agents in Smartflo</h2>
+        <div className="row" style={{ padding: "0 10px" }}>
+          <button className="ghost" onClick={loadUsers}>Load Smartflo users</button>
+          <span className="muted small">{users ? `${users.length} Smartflo user(s) loaded. Pick one in each row, then Save.` : "Fetches the users in your Smartflo account so you can pick instead of typing."}</span>
+        </div>
         <table>
-          <thead><tr><th>CRM agent</th><th>Smartflo login id</th><th>Smartflo agent number</th><th /></tr></thead>
+          <thead><tr><th>CRM agent</th>{users && <th>Smartflo user</th>}<th>Smartflo login id</th><th>Smartflo agent number</th><th /></tr></thead>
           <tbody>
             {d.agents.map((a, i) => (
               <tr key={a.id}>
                 <td>{a.name}<div className="muted small">{a.email}</div></td>
+                {users && (
+                  <td>
+                    <select value="" onChange={(e) => pickUser(i, e.target.value)} aria-label={`${a.name} Smartflo user`}>
+                      <option value="">Pick…</option>
+                      {users.map((u) => <option key={u.user_id} value={u.user_id}>{u.name || u.login_id} · {u.login_id}</option>)}
+                    </select>
+                  </td>
+                )}
                 <td><input value={a.smartflo_email} autoComplete="off" onChange={(e) => edit("agents", a.id, i, "smartflo_email", e.target.value.replace(/\s/g, ""))} aria-label={`${a.name} Smartflo login id`} /></td>
                 <td><input inputMode="numeric" value={a.agent_number} onChange={(e) => edit("agents", a.id, i, "agent_number", e.target.value.replace(/\D/g, ""))} aria-label={`${a.name} agent number`} /></td>
                 <td><button onClick={() => save(() => api(`/dialer/agents/${a.id}`, { method: "PUT", body: { smartflo_email: a.smartflo_email, agent_number: a.agent_number } }), `${a.name} saved.`)}>Save</button></td>
               </tr>
             ))}
-            {d.agents.length === 0 && <tr><td colSpan="4" className="muted">No active agents yet. Add them under Users and roles.</td></tr>}
+            {d.agents.length === 0 && <tr><td colSpan="5" className="muted">No active agents yet. Add them under Users and roles.</td></tr>}
           </tbody>
         </table>
         <p className="muted small" style={{ padding: "0 10px" }}>The login id is what the agent types to sign in to Smartflo; the agent number is the one Smartflo rings for click-to-call (usually the same long number starting with 0). The Smartflo password is never stored: each agent types it when they start a campaign.</p>
@@ -257,8 +299,9 @@ function Setup() {
         </table>
         <div className="row" style={{ padding: "8px 10px" }}>
           <button onClick={() => save(() => api("/dialer/dispositions", { method: "PUT", body: { map: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_status_id])) } }), "Outcome ids saved.")}>Save outcome ids</button>
-          <span className="muted small">After an auto-dialled call, Smartflo needs the outcome to release the agent for the next customer.</span>
+          <button className="ghost" disabled={busy || !d.status.enabled} onClick={makeOutcomes}>{busy ? "Creating…" : d.status.outcome_list_id ? "Re-check outcomes in Smartflo" : "Create outcomes in Smartflo"}</button>
         </div>
+        <p className="muted small" style={{ padding: "0 10px" }}>After an auto-dialled call, Smartflo needs the outcome to release the agent for the next customer. “Create outcomes in Smartflo” makes a list called “CRM call outcomes” with these {d.dispositions.length} outcomes and fills in the ids. Do this once, before creating campaigns in Smartflo.</p>
       </section>
     </>
   );
