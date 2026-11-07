@@ -2,7 +2,8 @@
 # Runs ON the server as the deploy user. Sets up Easebuzz payment links in /opt/crm/shared/.env and restarts the app.
 # The key and salt are typed at a prompt (the salt is not shown) so they never appear in the shell history or on screen.
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh key            # asks for the merchant key, then the salt
-#   bash /opt/crm/current/server-tools/set-easebuzz.sh submerchant S295719J5NW
+#   bash /opt/crm/current/server-tools/set-easebuzz.sh submerchant S295719J5NW   # only for sub-aggregator merchants
+#   bash /opt/crm/current/server-tools/set-easebuzz.sh submerchant none          # an ordinary merchant: do not send one
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh sandbox        # test environment (testdashboard.easebuzz.in) - the default
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh production     # live environment (dashboard.easebuzz.in)
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh on | off | status
@@ -26,16 +27,18 @@ case "$MODE" in
     [ -n "$K" ] && [ -n "$S" ] || { echo "Both are needed." >&2; exit 1; }
     setkey EASEBUZZ_KEY "$K"; setkey EASEBUZZ_SALT "$S" ;;
   submerchant)
-    ID="${2:?usage: set-easebuzz.sh submerchant <sub-merchant id>}"
+    ID="${2:?usage: set-easebuzz.sh submerchant <sub-merchant id>|none}"
+    [ "$ID" = "none" ] && ID=""
     setkey EASEBUZZ_SUB_MERCHANT_ID "$ID" ;;
   sandbox) setkey EASEBUZZ_BASE_URL "https://testdashboard.easebuzz.in" ;;
   production) setkey EASEBUZZ_BASE_URL "https://dashboard.easebuzz.in" ;;
   on)
-    for N in EASEBUZZ_KEY EASEBUZZ_SALT EASEBUZZ_SUB_MERCHANT_ID; do has "$N" || { echo "$N is not set." >&2; exit 1; }; done
+    for N in EASEBUZZ_KEY EASEBUZZ_SALT; do has "$N" || { echo "$N is not set." >&2; exit 1; }; done
     setkey EASEBUZZ_ENABLED true ;;
   off) setkey EASEBUZZ_ENABLED false ;;
   status)
-    for N in EASEBUZZ_KEY EASEBUZZ_SALT EASEBUZZ_SUB_MERCHANT_ID; do has "$N" && echo "$N: set" || echo "$N: NOT set"; done
+    for N in EASEBUZZ_KEY EASEBUZZ_SALT; do has "$N" && echo "$N: set" || echo "$N: NOT set"; done
+    has EASEBUZZ_SUB_MERCHANT_ID && echo "EASEBUZZ_SUB_MERCHANT_ID: set (sent with every link)" || echo "EASEBUZZ_SUB_MERCHANT_ID: none (ordinary merchant)"
     grep -E "^(EASEBUZZ_ENABLED|EASEBUZZ_BASE_URL)=" "$ENV_FILE" || true
     exit 0 ;;
   *) echo "usage: set-easebuzz.sh key|submerchant <id>|sandbox|production|on|off|status" >&2; exit 1 ;;

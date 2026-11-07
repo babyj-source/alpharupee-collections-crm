@@ -67,6 +67,14 @@ class CreateTests(P):
         self.assertEqual((link.payment_url, link.amount, link.state, link.created_by), (URL, Decimal("8980"), "active", self.a2))
         self.assertTrue(Activity.objects.filter(loan=self.l2, kind="message", detail__startswith="Payment link created").exists())
 
+    @override_settings(EASEBUZZ_SUB_MERCHANT_ID="")
+    def test_an_ordinary_merchant_sends_no_sub_merchant_id(self):
+        with mock.patch("payments.easebuzz.requests.post", return_value=created()) as post:
+            link, made = create_for_loan(self.l2, self.a2)
+        self.assertTrue(made)
+        self.assertNotIn("sub_merchant_id", post.call_args.kwargs["json"])
+        self.assertTrue(easebuzz.enabled())
+
     def test_same_day_same_amount_reuses_the_link(self):
         with mock.patch("payments.easebuzz.requests.post", return_value=created()) as post:
             a, _ = create_for_loan(self.l2, self.a2)
