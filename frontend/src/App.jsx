@@ -14,6 +14,7 @@ import ChangePassword from "./ChangePassword.jsx";
 import Dialer from "./Dialer.jsx";
 import Campaigns from "./Campaigns.jsx";
 import Chats from "./Chats.jsx";
+import Payments from "./Payments.jsx";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking
@@ -42,9 +43,9 @@ export default function App() {
   };
   const head = isHead(user);
   const tabs = head
-    ? [["dashboard", "Dashboard"], ["priority", "Priority list"], ["loans", "All accounts"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["ptps", "Promises"], ["allocation", "Allocation"], ["campaigns", "Campaigns"], ["mis", "MIS"],
+    ? [["dashboard", "Dashboard"], ["priority", "Priority list"], ["loans", "All accounts"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"], ["allocation", "Allocation"], ["campaigns", "Campaigns"], ["mis", "MIS"],
        ...(user.role === "admin" ? [["users", "Users and roles"]] : [])]
-    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Dialer"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["ptps", "Promises"]];
+    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Dialer"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"]];
 
   const pick = (id) => { setTab(id); setMenuOpen(false); };
 
@@ -82,6 +83,7 @@ export default function App() {
         {tab === "customers" && <Loans user={user} mode="customers" />}
         {tab === "callbacks" && <Callbacks user={user} />}
         {tab === "chats" && <Chats />}
+        {tab === "payments" && <Payments user={user} />}
         {tab === "ptps" && <Ptps user={user} />}
         {tab === "priority" && <Priority user={user} />}
         {tab === "allocation" && head && <Allocation />}
@@ -101,6 +103,7 @@ const ICONS = {
   customers: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
   callbacks: <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />,
   chats: <><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 1 1 21 11.5z" /></>,
+  payments: <><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /><line x1="6" y1="15" x2="10" y2="15" /></>,
   ptps: <><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /><path d="M9 16l2 2 4-4" /></>,
   priority: <><path d="M12 2l3 7h7l-5.5 4.2L18.5 21 12 16.8 5.5 21l2-7.8L2 9h7z" /></>,
   dialer: <><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z" /><path d="M15 3a6 6 0 0 1 6 6M15 7a2 2 0 0 1 2 2" /></>,

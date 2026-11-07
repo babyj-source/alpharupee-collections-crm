@@ -1,6 +1,9 @@
 import hmac
+from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
@@ -12,6 +15,7 @@ from rest_framework.views import APIView
 
 from accounts.models import audit
 from accounts.permissions import IsAdmin
+from loans.pagination import Page
 from loans.views import scoped
 
 from . import easebuzz
@@ -21,7 +25,7 @@ from .service import LinkRefused, StaleClosure, create_for_loan, preview, refres
 
 
 def _row(link):
-    return {"id": link.pk, "amount": str(link.amount), "as_on": link.closure_as_on, "url": link.payment_url, "state": link.state,
+    return {"id": link.pk, "ref": link.merchant_txn, "amount": str(link.amount), "as_on": link.closure_as_on, "url": link.payment_url, "state": link.state,
             "state_label": link.get_state_display(), "expires_on": link.expires_on, "created_at": link.created_at, "paid_at": link.paid_at,
             "by": link.created_by.name if link.created_by else "", "lms": link.lms_state}
 
@@ -111,3 +115,56 @@ class WebhookLogView(APIView):
 
     def get(self, request):
         return Response([{"at": w.created_at, "handled": w.handled, "body": w.body} for w in PaymentWebhookLog.objects.all()[:30]])
+
+
+def _scoped_links(request):
+    """Payment links on the accounts this user may see (agents: their own; head/admin: all), narrowed by ?days= and ?q=."""
+    p = request.query_params
+    qs = PaymentLink.objects.filter(loan__in=scoped(request.user).values("pk")).select_related("loan", "loan__assigned_agent", "created_by")
+    try:
+        days = int(p.get("days", "0") or 0)
+    except ValueError:
+        days = 0
+    if days > 0:
+        qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+    q = (p.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(loan__account_id__icontains=q) | Q(loan__borrower_name__icontains=q) | Q(merchant_txn__icontains=q))
+    return qs
+
+
+def _list_row(link):
+    agent = link.loan.assigned_agent
+    return {**_row(link), "loan_id": link.loan_id, "account_id": link.loan.account_id, "borrower_name": link.loan.borrower_name,
+            "agent_name": agent.name if agent else "", "lms_label": link.get_lms_state_display(), "checked_at": link.checked_at}
+
+
+class LinksListView(APIView):
+    """Payment tracking screen: every payment link on the user's accounts, newest first. Filters: state, lms, q, days."""
+
+    def get(self, request):
+        qs = _scoped_links(request)
+        state, lms = request.query_params.get("state", ""), request.query_params.get("lms", "")
+        if state in {c for c, _ in PaymentLink.State.choices}:
+            qs = qs.filter(state=state)
+        if lms in {c for c, _ in PaymentLink.Lms.choices if c}:
+            qs = qs.filter(lms_state=lms)
+        elif lms == "notpaid":
+            qs = qs.filter(lms_state="")
+        page = Page()
+        rows = page.paginate_queryset(qs, request)
+        return page.get_paginated_response([_list_row(x) for x in rows])
+
+
+class LinksSummaryView(APIView):
+    """The tiles on the payment tracking screen: how many links are waiting, paid, expired, and where the LMS posting stands."""
+
+    def get(self, request):
+        qs = _scoped_links(request)
+        def part(**f):
+            a = qs.filter(**f).aggregate(n=Count("id"), amount=Sum("amount"))
+            return {"count": a["n"], "amount": str(a["amount"] or 0)}
+        return Response({
+            "active": part(state="active"), "paid": part(state="paid"), "expired": part(state="expired"),
+            "lms_pending": part(lms_state="pending"), "lms_posted": part(lms_state="posted"), "lms_failed": part(lms_state="failed"),
+        })
