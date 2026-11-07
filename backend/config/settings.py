@@ -161,6 +161,7 @@ EASEBUZZ_KEY = env("EASEBUZZ_KEY", "")
 EASEBUZZ_SALT = env("EASEBUZZ_SALT", "")
 EASEBUZZ_SUB_MERCHANT_ID = env("EASEBUZZ_SUB_MERCHANT_ID", "")
 EASEBUZZ_BASE_URL = env("EASEBUZZ_BASE_URL", "https://testdashboard.easebuzz.in").rstrip("/")
+EASEBUZZ_WEBHOOK_TOKEN = env("EASEBUZZ_WEBHOOK_TOKEN", "")     # secret in the webhook address Easebuzz calls; empty = the webhook refuses everything
 PAYMENT_LINK_VALID_DAYS = int(env("PAYMENT_LINK_VALID_DAYS", "2"))    # a link made today works until the end of today + this many days
 
 # ---- WhatsApp through MSG91. OFF until MSG91_WHATSAPP_ENABLED=true. The two URLs are from memory of MSG91's API and have not been
