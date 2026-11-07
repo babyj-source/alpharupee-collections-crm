@@ -4,6 +4,7 @@ import { api, inr } from "./api.js";
 import { clock, startCall, step } from "./callphase.js";
 import Whatsapp from "./WhatsappChat.jsx";
 import PaymentLink from "./PaymentLink.jsx";
+import { ScriptBox } from "./Script.jsx";
 
 const STATUSES = [
   ["new", "New"], ["contacted", "Contacted"], ["reference_contacted", "Reference contacted"], ["promised", "Promise to pay"],
@@ -115,6 +116,8 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
         <dt>Promise</dt>
         <dd>{p ? <>{inr(p.amount)} by {fmtDate(p.date)} <span className={`chip ${p.state}`}>{ptpChip[p.state]}</span></> : "—"}</dd>
       </dl>
+
+      <ScriptBox />
 
       <section>
         <h3>Who to call</h3>

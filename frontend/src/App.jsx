@@ -15,6 +15,12 @@ import Dialer from "./Dialer.jsx";
 import Campaigns from "./Campaigns.jsx";
 import Chats from "./Chats.jsx";
 import Payments from "./Payments.jsx";
+import Performance from "./Performance.jsx";
+import CallLog from "./CallLog.jsx";
+import Messages from "./Messages.jsx";
+import Audit from "./Audit.jsx";
+import Weights from "./Weights.jsx";
+import Script from "./Script.jsx";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking
@@ -43,9 +49,9 @@ export default function App() {
   };
   const head = isHead(user);
   const tabs = head
-    ? [["dashboard", "Dashboard"], ["priority", "Priority list"], ["loans", "All accounts"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"], ["allocation", "Allocation"], ["campaigns", "Campaigns"], ["mis", "MIS"],
-       ...(user.role === "admin" ? [["users", "Users and roles"]] : [])]
-    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Campaigns"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"]];
+    ? [["dashboard", "Dashboard"], ["priority", "Priority list"], ["loans", "All accounts"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"], ["allocation", "Allocation"], ["campaigns", "Campaigns"], ["scorecard", "Agent scorecard"], ["calllog", "Call log"], ["messages", "Messages"], ["mis", "MIS"], ["script", "Call script"],
+       ...(user.role === "admin" ? [["users", "Users and roles"], ["audit", "Audit log"], ["weights", "Priority points"]] : [])]
+    : [["dashboard", "My summary"], ["priority", "Priority list"], ["dialer", "Campaigns"], ["loans", "My worklist"], ["customers", "My customers"], ["callbacks", "Call-backs"], ["chats", "WhatsApp chats"], ["payments", "Payments"], ["ptps", "Promises"], ["myperf", "My performance"], ["script", "Call script"]];
 
   const pick = (id) => { setTab(id); setMenuOpen(false); };
 
@@ -90,6 +96,13 @@ export default function App() {
         {tab === "mis" && head && <Mis />}
         {tab === "campaigns" && head && <Campaigns user={user} />}
         {tab === "dialer" && !head && <Dialer />}
+        {tab === "scorecard" && head && <Performance />}
+        {tab === "myperf" && !head && <Performance mine />}
+        {tab === "calllog" && head && <CallLog />}
+        {tab === "messages" && head && <Messages user={user} />}
+        {tab === "script" && <Script user={user} />}
+        {tab === "audit" && user.role === "admin" && <Audit />}
+        {tab === "weights" && user.role === "admin" && <Weights />}
         {tab === "users" && user.role === "admin" && <Users me={user} />}
       </main>
     </div>
@@ -110,6 +123,13 @@ const ICONS = {
   campaigns: <><path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1z" /><path d="M16 8a5 5 0 0 1 0 8M19 5a9 9 0 0 1 0 14" /></>,
   mis: <><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>,
   users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M19 8v6M22 11h-6" /></>,
+  scorecard: <><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" /><path d="M9 8l2 2 4-4" /></>,
+  myperf: <><polyline points="3 17 9 11 13 15 21 6" /><polyline points="15 6 21 6 21 12" /></>,
+  calllog: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>,
+  messages: <><rect x="2" y="4" width="20" height="16" rx="2" /><path d="M2 7l10 7 10-7" /></>,
+  script: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="14" y2="17" /></>,
+  audit: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></>,
+  weights: <><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" /></>,
   allocation: <><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></>,
 };
 

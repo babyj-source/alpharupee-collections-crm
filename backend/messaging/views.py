@@ -3,6 +3,7 @@ import json
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -68,8 +69,8 @@ class WhatsappSerializer(serializers.ModelSerializer):
     class Meta:
         model = WhatsappTemplate
         fields = ["key", "name", "msg91_template_id", "namespace", "language", "kind", "days_before_due", "body", "variables",
-                  "has_image_header", "header_image_url", "active"]
-        read_only_fields = [f for f in fields if f not in ("header_image_url", "active")]
+                  "has_image_header", "header_image_url", "active", "auto_send"]
+        read_only_fields = [f for f in fields if f not in ("header_image_url", "active", "auto_send")]
 
     def validate_header_image_url(self, v):
         if v and not v.startswith("https://"):
@@ -95,7 +96,7 @@ class WhatsappUpdateView(APIView):
         ser.is_valid(raise_exception=True)
         ser.save()
         audit(request, "whatsapp_template_updated", user=request.user, object_type="whatsapp_template", object_id=t.pk,
-              detail=f"{key} active={t.active} image={'set' if t.header_image_url else 'none'}")
+              detail=f"{key} active={t.active} auto={t.auto_send} image={'set' if t.header_image_url else 'none'}")
         return Response(WhatsappSerializer(t).data)
 
 
@@ -322,3 +323,37 @@ class WhatsappCallView(APIView):
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.CALL, detail=f"WhatsApp call opened to {label}")
         audit(request, "whatsapp_call_opened", user=request.user, object_type="loan", object_id=loan.pk, detail=d["which"])
         return Response({"url": f"https://wa.me/{number}"})
+
+
+class SentLogView(APIView):
+    """Head or Admin: every SMS or WhatsApp the CRM sent, newest first, with its state. ?channel=sms|whatsapp (default whatsapp),
+    state, days (default 7), q (account number or borrower name), page. Numbers are never shown, only the last four digits."""
+
+    permission_classes = [IsHead]
+    PAGE = 50
+
+    def get(self, request):
+        p = request.query_params
+        try:
+            days = max(1, min(90, int(p.get("days", 7))))
+            page = max(1, int(p.get("page", 1)))
+        except ValueError:
+            return Response({"detail": "days and page must be numbers."}, status=status.HTTP_400_BAD_REQUEST)
+        channel = "sms" if p.get("channel") == "sms" else "whatsapp"
+        since = timezone.now() - timedelta(days=days)
+        if channel == "sms":
+            qs = MessageLog.objects.filter(created_at__gte=since)
+        else:
+            qs = WhatsappMessage.objects.filter(created_at__gte=since, direction="out")
+        qs = qs.select_related("loan", "sent_by")
+        if p.get("state"):
+            qs = qs.filter(state=p["state"])
+        q = (p.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(loan__account_id__icontains=q) | Q(loan__borrower_name__icontains=q))
+        total, failed = qs.count(), qs.filter(state="failed").count()
+        rows = qs.order_by("-created_at", "-id")[(page - 1) * self.PAGE: page * self.PAGE]
+        return Response({"channel": channel, "count": total, "failed": failed, "page": page, "page_size": self.PAGE, "results": [
+            {"id": m.pk, "at": m.created_at, "account_id": m.loan.account_id if m.loan else "", "borrower_name": m.loan.borrower_name if m.loan else "",
+             "template": m.template_key, "state": m.state, "text": m.text, "error": m.error, "to": "xxxxxx" + m.mobile_last4,
+             "by": m.sent_by.name if m.sent_by else "Automatic", "loan_id": m.loan_id} for m in rows]})

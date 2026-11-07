@@ -244,3 +244,25 @@ class SyncRun(models.Model):
 
     class Meta:
         ordering = ["-started_at"]
+
+
+class PriorityConfig(models.Model):
+    """The points behind the priority list, editable by the Admin. One row (pk=1); empty `values` = the built-in defaults in priority.py."""
+
+    values = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ScriptSection(models.Model):
+    """One block of the agent's call script shown on the account screen. The Admin edits the wording."""
+
+    key = models.CharField(max_length=30, unique=True)
+    title = models.CharField(max_length=60)
+    body = models.TextField(blank=True)
+    sort = models.PositiveSmallIntegerField(default=0)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort", "id"]
