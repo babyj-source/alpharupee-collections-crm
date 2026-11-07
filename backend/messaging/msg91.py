@@ -120,3 +120,24 @@ def send_whatsapp_text(mobile, text):
     """Free text, allowed only while the customer's 24-hour window is open."""
     body = {"integrated_number": settings.MSG91_WHATSAPP_NUMBER, "recipient_number": mobile, "content_type": "text", "text": text}
     return _wa_post(settings.MSG91_WHATSAPP_TEXT_URL, body)
+
+
+def set_whatsapp_call_settings(enabled, call_hours=None):
+    """MSG91 'WhatsApp Voice Call' settings: switch calling on or off for the business number. Returns (HTTP status, MSG91's message).
+    Settings only: MSG91 documents no endpoint that places a call. The body is from the doc plus `integrated_number`, which the
+    doc's 400 text ('Integrated number missing') implies but does not show, so the reply is returned as it is for the operator to read."""
+    if not settings.MSG91_AUTHKEY or not settings.MSG91_WHATSAPP_NUMBER:
+        raise Msg91Error("MSG91_AUTHKEY and MSG91_WHATSAPP_NUMBER must be set first")
+    body = {"integrated_number": settings.MSG91_WHATSAPP_NUMBER, "status": "ENABLED" if enabled else "DISABLED",
+            "call_hours": call_hours or {"status": "DISABLED"}}
+    headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        resp = requests.post(settings.MSG91_WHATSAPP_CALL_SETTINGS_URL, json=body, headers=headers, timeout=20)
+    except requests.RequestException as exc:
+        raise Msg91Error("MSG91 request failed") from exc
+    try:
+        d = resp.json()
+    except ValueError:
+        d = {}
+    msg = str(d.get("message") or d.get("error") or d.get("errors") or "")[:300] if isinstance(d, dict) else ""
+    return resp.status_code, msg

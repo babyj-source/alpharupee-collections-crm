@@ -402,6 +402,7 @@ class MetaView(APIView):
             "sms_enabled": bool(settings.MSG91_SMS_ENABLED and settings.MSG91_AUTHKEY),
             "payments_enabled": bool(settings.EASEBUZZ_ENABLED and settings.EASEBUZZ_KEY and settings.EASEBUZZ_SALT),
             "whatsapp_enabled": bool(settings.MSG91_WHATSAPP_ENABLED and settings.MSG91_AUTHKEY and settings.MSG91_WHATSAPP_NUMBER),
+            "whatsapp_call_enabled": bool(settings.WHATSAPP_CALL_ENABLED),
         })
 
 

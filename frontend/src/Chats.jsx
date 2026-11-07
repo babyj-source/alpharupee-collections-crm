@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import Account from "./Account.jsx";
 import Whatsapp from "./WhatsappChat.jsx";
 import { clock, startCall, step } from "./callphase.js";
+import { openWhatsappCall } from "./whatsappcall.js";
 
 const when = (t) => {
   const d = new Date(t), now = new Date();
@@ -25,6 +26,7 @@ export default function Chats() {
   const [live, setLive] = useState(null);       // call panel state, see callphase.js
   const [calling, setCalling] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [waCalling, setWaCalling] = useState(false);
   const poll = useRef(null);
 
   const load = () => api("/messaging/whatsapp/inbox").then(setRows).catch((e) => setError(e.message));
@@ -80,6 +82,11 @@ export default function Chats() {
     try { await api("/dialer/call/hangup", { method: "POST", body: { loan_id: loan.id } }); }
     catch (e) { setError(e.message); }
     finally { setEnding(false); }
+  }
+  async function waCall() {
+    setError(""); setWaCalling(true);
+    try { await openWhatsappCall(loan.id, "borrower"); }
+    catch (e) { setError(e.message); } finally { setTimeout(() => setWaCalling(false), 2000); }
   }
   const inCall = live && ["starting", "ringing", "connected"].includes(live.phase);
 
@@ -138,6 +145,9 @@ export default function Chats() {
                 inCall
                   ? <button className="danger" disabled={ending || !["ringing", "connected"].includes(live.phase)} onClick={endCall}>{ending ? "Ending…" : "End call"}</button>
                   : <button disabled={calling} onClick={call}>{calling ? "Calling…" : "Call"}</button>
+              )}
+              {meta?.whatsapp_call_enabled && loan && (
+                <button className="wa-call" disabled={waCalling} onClick={waCall} title="Opens this customer's chat in your WhatsApp. Tap the call icon there.">{waCalling ? "Opening…" : "WhatsApp call"}</button>
               )}
               <button className="ghost" disabled={!loan} onClick={() => setDrawer(true)}>Account details</button>
             </div>
