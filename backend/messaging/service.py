@@ -18,6 +18,16 @@ class RepeatNeeded(SendRefused):
     """The same template already went to this borrower today. It can go again, but only when the sender confirms (again=True)."""
 
 
+def _default_link(loan):
+    """The link a message carries. With Easebuzz on it is only ever today's real payment link for this loan (never the dummy default);
+    with Easebuzz off it is PAYMENT_LINK_DEFAULT, as before."""
+    from payments import easebuzz
+    from payments.service import link_url_for_messages
+    if easebuzz.enabled():
+        return link_url_for_messages(loan)
+    return settings.PAYMENT_LINK_DEFAULT
+
+
 def in_window(now=None):
     h = timezone.localtime(now or timezone.now()).hour
     return CALL_START_HOUR <= h < CALL_END_HOUR      # same 08:00-19:00 window as calls
@@ -25,7 +35,7 @@ def in_window(now=None):
 
 def _prepare(loan, template_key, link, now, again=False):
     """Pick the template and build the message, or raise SendRefused. Shared by the preview and the send so they never disagree."""
-    link = (link or settings.PAYMENT_LINK_DEFAULT or "").strip() or None
+    link = (link or _default_link(loan) or "").strip() or None
     if template_key:
         template = SmsTemplate.objects.filter(key=template_key, active=True).first()
         if template is None:

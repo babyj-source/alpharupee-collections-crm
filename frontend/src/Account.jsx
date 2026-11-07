@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, inr } from "./api.js";
 import { clock, startCall, step } from "./callphase.js";
 import Whatsapp from "./WhatsappChat.jsx";
+import PaymentLink from "./PaymentLink.jsx";
 
 const STATUSES = [
   ["new", "New"], ["contacted", "Contacted"], ["reference_contacted", "Reference contacted"], ["promised", "Promise to pay"],
@@ -166,6 +167,7 @@ function Messages({ loan, meta, onSent }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState({ ok: "", err: "" });
+  const [ver, setVer] = useState(0);   // bumps when the payment link changes, so the SMS and WhatsApp previews pick it up
 
   const load = () => {
     api(`/messaging/preview?loan=${loan.id}`).then(setPreview).catch(() => setPreview(null));
@@ -186,6 +188,7 @@ function Messages({ loan, meta, onSent }) {
   return (
     <section>
       <h3>Messages</h3>
+      <PaymentLink loan={loan} meta={meta} onChange={() => { setVer((v) => v + 1); load(); onSent?.(); }} />
       {off && <p className="muted small">SMS sending is switched off on this server.</p>}
       {!off && preview && preview.problem && <p className="muted small">SMS: {preview.problem}</p>}
       {!off && preview && !preview.problem && (
@@ -216,7 +219,7 @@ function Messages({ loan, meta, onSent }) {
           ))}
         </ul>
       )}
-      <Whatsapp loan={loan} meta={meta} onSent={onSent} />
+      <Whatsapp key={`${loan.id}-${ver}`} loan={loan} meta={meta} onSent={onSent} />
     </section>
   );
 }
