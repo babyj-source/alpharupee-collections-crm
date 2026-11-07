@@ -107,3 +107,24 @@ shown on the screen and stored on the message; adjust `MSG91_WHATSAPP_TEMPLATE_U
   (prints the webhook URL to put in MSG91's inbound and status webhooks), `... on`. `off` switches it off. `/api/meta` carries `whatsapp_enabled`.
 * **Not built: WhatsApp calling.** Needs the MSG91 WhatsApp calling specification; Easebuzz is a payment gateway and has no WhatsApp calls.
 * Still needed: the next-EMI-due date (for the due-date reminders), header image URLs, the business number.
+
+## Easebuzz payment links (part 7)
+
+Built from Easebuzz's EasyCollect documentation ("Sub-merchant Create/Update Link" and "Get Easycollect Link"). Sandbox first.
+
+* **Make a link:** the account screen, **Messages → Payment link**: shows the closure amount as on its date, **Make payment link**, a confirm step.
+  The amount is the loan's closure amount (whole rupee). `udf1` is `CRM`, `udf2` is the LAN (account number); the name and 10-digit mobile are the
+  borrower's; the link works until the end of today + `PAYMENT_LINK_VALID_DAYS` (default 2) days. The request is signed with Easebuzz's rule
+  `sha512(key|merchant_txn|name|email|phone|amount|udf1..udf5|message|salt)`; the salt stays on the server.
+* **Same day, same amount = the same link** (no duplicates). A changed closure amount makes a new link; older links stay payable at Easebuzz until they expire.
+* **Stale amount:** if the closure amount is not for today (the LMS sync is stopped or late) the CRM stops and asks "Make the link anyway?".
+* **Messages use the real link:** with Easebuzz on, an SMS/WhatsApp with a payment link carries only today's active link for that loan. With no such link the
+  message refuses ("make the payment link first"): the dummy `PAYMENT_LINK_DEFAULT` is never sent when Easebuzz is on.
+* **Payment tracking:** the CRM asks Easebuzz (`GET /easycollect/v1/get`, `payment_made`) every 20 seconds while the account is open, and
+  `manage.py check_payment_links` does the same for every open link made in the last 7 days (run every minute by `crm-payments.timer`, installed with
+  `deploy/server/install-payments-timer.sh`). A paid link shows "Paid", writes "Payment of ₹X received" on the timeline and is marked **waiting to be posted to the LMS**.
+  I could not find Easebuzz's payment-success webhook page, so no webhook is used; polling needs none.
+* **Not built yet: posting the payment to the LMS** (needs Encore's repayment-posting API; the CRM's LMS access is read-only). Paid links keep `lms_state = pending`.
+* **Unverified until the first sandbox payment:** what Easebuzz returns in `payment_made` / `state` for a paid link (the documentation shows only unpaid examples). The CRM treats `payment_made >= 1` as paid.
+* **Switch on (server, as deploy):** `set-easebuzz.sh key` (asks for the key and the hidden salt), `set-easebuzz.sh submerchant <id>`, `set-easebuzz.sh sandbox`, `set-easebuzz.sh on`. `status` shows what is set. `production` switches to the live address.
+* **DLT:** the link's domain (pay.easebuzz.in) must be registered/whitelisted for the SMS templates, or operators may block the SMS.

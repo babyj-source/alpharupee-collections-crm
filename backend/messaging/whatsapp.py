@@ -11,7 +11,7 @@ from loans.workflow import CALL_END_HOUR, CALL_START_HOUR
 
 from . import msg91
 from .models import WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
-from .service import RepeatNeeded, SendRefused, in_window
+from .service import _default_link, RepeatNeeded, SendRefused, in_window
 from .templates import MissingValue, render, variables_for
 
 
@@ -28,7 +28,7 @@ def session_open(loan, now=None):
 
 # --------------------------------------------------------------------------------------------------------------- templates
 def _prepare(loan, template_key, link, now, again=False):
-    link = (link or settings.PAYMENT_LINK_DEFAULT or "").strip() or None
+    link = (link or _default_link(loan) or "").strip() or None
     if template_key:
         template = WhatsappTemplate.objects.filter(key=template_key, active=True).first()
         if template is None:

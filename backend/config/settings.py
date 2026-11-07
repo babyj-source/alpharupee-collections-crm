@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "loans",
     "dialer",
     "messaging",
+    "payments",
 ]
 # The Django admin is deliberately NOT installed: it signs in with a password only, which would
 # bypass the OTP step. Users are created with `manage.py create_crm_user`.
@@ -106,7 +107,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsSettled"],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "sms": "30/min", "whatsapp": "60/min", "dialer_login": "5/min"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "10/min", "reveal": "30/min", "export": "6/min", "bulk": "30/min", "admin": "60/min", "dial": "60/min", "sms": "30/min", "whatsapp": "60/min", "payment": "30/min", "dialer_login": "5/min"},
     "NUM_PROXIES": int(env("NUM_PROXIES", "1")),  # nginx. Use 2 when Cloudflare is switched on.
     "DEFAULT_PAGINATION_CLASS": "loans.pagination.Page",
     "PAGE_SIZE": 50,
@@ -152,6 +153,15 @@ MSG91_SMS_ENABLED = env_bool("MSG91_SMS_ENABLED", False)
 PAYMENT_LINK_DEFAULT = env("PAYMENT_LINK_DEFAULT", "")
 # Most SMS one loan may get in a day (all templates together). Sending the same template again needs a confirmation first.
 SMS_MAX_PER_LOAN_PER_DAY = int(env("SMS_MAX_PER_LOAN_PER_DAY", "3"))
+
+# ---- Easebuzz EasyCollect payment links. OFF until EASEBUZZ_ENABLED=true and the key, salt and sub-merchant id are set
+# (deploy/server/set-easebuzz.sh). The base is the SANDBOX until it is set to https://dashboard.easebuzz.in for production.
+EASEBUZZ_ENABLED = env_bool("EASEBUZZ_ENABLED", False)
+EASEBUZZ_KEY = env("EASEBUZZ_KEY", "")
+EASEBUZZ_SALT = env("EASEBUZZ_SALT", "")
+EASEBUZZ_SUB_MERCHANT_ID = env("EASEBUZZ_SUB_MERCHANT_ID", "")
+EASEBUZZ_BASE_URL = env("EASEBUZZ_BASE_URL", "https://testdashboard.easebuzz.in").rstrip("/")
+PAYMENT_LINK_VALID_DAYS = int(env("PAYMENT_LINK_VALID_DAYS", "2"))    # a link made today works until the end of today + this many days
 
 # ---- WhatsApp through MSG91. OFF until MSG91_WHATSAPP_ENABLED=true. The two URLs are from memory of MSG91's API and have not been
 # checked against its documentation: if MSG91 refuses a request, correct them here without a code change.

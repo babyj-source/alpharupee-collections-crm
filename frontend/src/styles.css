@@ -136,3 +136,8 @@ button.danger:disabled { opacity: .6; }
   .wweb .wweb-chat { display: none; } .wweb.chat-open .wweb-list { display: none; } .wweb.chat-open .wweb-chat { display: flex; }
   .wweb-back { display: inline-block; }
 }
+
+/* payment link box */
+.paylink { display: grid; gap: 6px; margin-bottom: 8px; }
+.linkline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.linktext { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; user-select: all; }

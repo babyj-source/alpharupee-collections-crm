@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/auth/", include("accounts.urls")),
     path("api/dialer/", include("dialer.urls")),
     path("api/messaging/", include("messaging.urls")),
+    path("api/payments/", include("payments.urls")),
     path("api/", include("accounts.api_urls")),
     path("api/", include("loans.urls")),
 ]
