@@ -36,3 +36,14 @@ class PaymentLink(models.Model):
 
     def __str__(self):
         return self.merchant_txn
+
+
+class PaymentWebhookLog(models.Model):
+    """What Easebuzz's transaction webhook sent (only the fields we need: no phone, e-mail or card data). Last 200 kept. For support."""
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    body = models.TextField(blank=True)
+    handled = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ["-id"]

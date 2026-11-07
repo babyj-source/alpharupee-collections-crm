@@ -6,10 +6,11 @@
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh submerchant none          # an ordinary merchant: do not send one
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh sandbox        # test environment (testdashboard.easebuzz.in) - the default
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh production     # live environment (dashboard.easebuzz.in)
+#   bash /opt/crm/current/server-tools/set-easebuzz.sh token         # make the secret for the webhook address and print the address
 #   bash /opt/crm/current/server-tools/set-easebuzz.sh on | off | status
 set -euo pipefail
 ENV_FILE="${ENV_FILE:-/opt/crm/shared/.env}"
-MODE="${1:?usage: set-easebuzz.sh key|submerchant <id>|sandbox|production|on|off|status}"
+MODE="${1:?usage: set-easebuzz.sh key|submerchant <id>|token|sandbox|production|on|off|status}"
 [ -f "$ENV_FILE" ] || { echo "$ENV_FILE is missing. Run setup-env.sh first." >&2; exit 1; }
 
 setkey() {  # setkey NAME VALUE : replace or append one line, keep everything else
@@ -30,6 +31,12 @@ case "$MODE" in
     ID="${2:?usage: set-easebuzz.sh submerchant <sub-merchant id>|none}"
     [ "$ID" = "none" ] && ID=""
     setkey EASEBUZZ_SUB_MERCHANT_ID "$ID" ;;
+  token)
+    TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    setkey EASEBUZZ_WEBHOOK_TOKEN "$TOKEN"
+    HOST="${CRM_HOST:-uat-crm.alpharupee.in}"
+    echo "Webhook address to put in the Easebuzz dashboard (keep it secret):"
+    echo "https://$HOST/api/payments/webhook?token=$TOKEN" ;;
   sandbox) setkey EASEBUZZ_BASE_URL "https://testdashboard.easebuzz.in" ;;
   production) setkey EASEBUZZ_BASE_URL "https://dashboard.easebuzz.in" ;;
   on)
@@ -41,7 +48,7 @@ case "$MODE" in
     has EASEBUZZ_SUB_MERCHANT_ID && echo "EASEBUZZ_SUB_MERCHANT_ID: set (sent with every link)" || echo "EASEBUZZ_SUB_MERCHANT_ID: none (ordinary merchant)"
     grep -E "^(EASEBUZZ_ENABLED|EASEBUZZ_BASE_URL)=" "$ENV_FILE" || true
     exit 0 ;;
-  *) echo "usage: set-easebuzz.sh key|submerchant <id>|sandbox|production|on|off|status" >&2; exit 1 ;;
+  *) echo "usage: set-easebuzz.sh key|submerchant <id>|token|sandbox|production|on|off|status" >&2; exit 1 ;;
 esac
 chmod 600 "$ENV_FILE"
 if [ -z "${SKIP_RESTART:-}" ]; then sudo systemctl restart crm; fi

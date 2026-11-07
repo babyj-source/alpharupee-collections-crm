@@ -295,3 +295,81 @@ class MessagesUseTheRealLinkTests(P):
     @override_settings(EASEBUZZ_ENABLED=False)
     def test_with_easebuzz_off_the_default_link_still_works(self):
         self.assertEqual(preview_sms(self.l2)["problem"], "")
+
+
+@override_settings(EASEBUZZ_WEBHOOK_TOKEN="hooksecret", **CFG)
+class WebhookTests(P):
+    def make(self):
+        with mock.patch("payments.easebuzz.requests.post", return_value=created()):
+            return create_for_loan(self.l2, self.a2)[0]
+
+    def call(self, data, token="hooksecret"):
+        from urllib.parse import urlencode
+        return self.api().generic("POST", f"/api/payments/webhook?token={token}", urlencode(data), content_type="application/x-www-form-urlencoded")
+
+    def test_wrong_or_missing_token_is_refused_and_does_nothing(self):
+        link = self.make()
+        with mock.patch("payments.easebuzz.requests.get") as get:
+            self.assertEqual(self.call({"txnid": link.merchant_txn, "status": "success"}, token="nope").status_code, 403)
+            self.assertEqual(self.api().generic("POST", "/api/payments/webhook", "x=1", content_type="application/x-www-form-urlencoded").status_code, 403)
+            get.assert_not_called()
+        with override_settings(EASEBUZZ_WEBHOOK_TOKEN=""):
+            self.assertEqual(self.call({"txnid": "x"}, token="").status_code, 403)
+
+    def test_a_success_call_prompts_a_signed_status_check_and_the_link_becomes_paid(self):
+        link = self.make()
+        with mock.patch("payments.easebuzz.requests.get", return_value=got(1, "paid")) as get:
+            r = self.call({"txnid": link.merchant_txn, "status": "success", "amount": "8980.0", "udf1": "CRM", "udf2": "L2", "phone": "9222222222", "email": "a@b.c"})
+        self.assertEqual((r.status_code, r.json()), (200, {"ok": True}))
+        self.assertEqual(get.call_count, 1)
+        link.refresh_from_db()
+        self.assertEqual((link.state, link.lms_state), ("paid", "pending"))
+        from payments.models import PaymentWebhookLog
+        entry = PaymentWebhookLog.objects.get()
+        self.assertIn("success", entry.body)
+        self.assertNotIn("9222222222", entry.body)               # no phone or e-mail is kept
+        self.assertNotIn("a@b.c", entry.body)
+        self.assertIn("changed 1", entry.handled)
+
+    def test_the_webhook_alone_never_marks_a_link_paid(self):
+        link = self.make()
+        with mock.patch("payments.easebuzz.requests.get", return_value=got(0)):
+            self.call({"txnid": link.merchant_txn, "status": "success"})
+        link.refresh_from_db()
+        self.assertEqual(link.state, "active")
+
+    def test_finds_the_link_by_crm_and_lan_when_txnid_is_not_ours(self):
+        link = self.make()
+        with mock.patch("payments.easebuzz.requests.get", return_value=got(1, "paid")):
+            self.call({"txnid": "EASEBUZZOWN123", "status": "success", "udf1": "CRM", "udf2": "L2"})
+        link.refresh_from_db()
+        self.assertEqual(link.state, "paid")
+
+    def test_unknown_payment_is_logged_and_acknowledged(self):
+        r = self.call({"txnid": "SOMEONEELSE", "status": "success", "udf1": "SHOP", "udf2": "L2"})
+        self.assertEqual(r.status_code, 200)
+        from payments.models import PaymentWebhookLog
+        self.assertEqual(PaymentWebhookLog.objects.get().handled, "no matching link")
+
+    def test_easebuzz_down_still_answers_200_so_it_does_not_block_the_webhook(self):
+        link = self.make()
+        with mock.patch("payments.easebuzz.requests.get", return_value=Resp({}, 500)):
+            r = self.call({"txnid": link.merchant_txn, "status": "success"})
+        self.assertEqual(r.status_code, 200)
+        link.refresh_from_db()
+        self.assertEqual(link.state, "active")                   # the one-minute check will try again
+
+    def test_response_hash_check_follows_the_documented_order(self):
+        d = {"key": "KEY1", "txnid": "T1", "amount": "10.0", "productinfo": "p", "firstname": "f", "email": "e", "status": "success", "udf1": "CRM", "udf2": "L2"}
+        parts = ["SALT1", "success"] + [d.get(f"udf{i}", "") for i in range(10, 0, -1)] + ["e", "f", "p", "10.0", "T1", "KEY1"]
+        d["hash"] = sha(*parts)
+        from payments.webhook import response_hash_ok
+        self.assertTrue(response_hash_ok(d))
+        d["amount"] = "11.0"
+        self.assertFalse(response_hash_ok(d))
+
+    def test_webhook_log_is_admin_only(self):
+        self.call({"txnid": "x"})
+        self.assertEqual(self.api(self.a2).get("/api/payments/webhook-log").status_code, 403)
+        admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
+        self.assertEqual(len(self.api(admin).get("/api/payments/webhook-log").json()), 1)

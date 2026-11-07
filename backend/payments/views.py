@@ -1,14 +1,22 @@
+import hmac
+
+from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from accounts.models import audit
+from accounts.permissions import IsAdmin
 from loans.views import scoped
 
 from . import easebuzz
-from .models import PaymentLink
+from . import webhook
+from .models import PaymentLink, PaymentWebhookLog
 from .service import LinkRefused, StaleClosure, create_for_loan, preview, refresh
 
 
@@ -72,3 +80,34 @@ class LinkRefreshView(APIView):
         except easebuzz.EasebuzzError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(_row(link))
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class EasebuzzWebhookView(APIView):
+    """Easebuzz calls this when a payment changes state. No login; a secret token in the address protects it. Always answers 200
+    (Easebuzz only accepts 200) once the token is right: the payment itself is confirmed with Easebuzz, not taken from this call."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        want = settings.EASEBUZZ_WEBHOOK_TOKEN
+        got = request.query_params.get("token", "")
+        if not want or not hmac.compare_digest(want.encode(), got.encode()):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        data = {k: v for k, v in request.POST.items()} if request.POST else (request.data if isinstance(request.data, dict) else {})
+        try:
+            handled = webhook.handle(data)
+        except Exception:      # an odd call must not make Easebuzz retry for hours; it is in the log
+            handled = "error"
+        webhook.log(data, handled)
+        return Response({"ok": True})
+
+
+class WebhookLogView(APIView):
+    """Admin: the last webhook calls (only the fields we use), to check the real shape."""
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        return Response([{"at": w.created_at, "handled": w.handled, "body": w.body} for w in PaymentWebhookLog.objects.all()[:30]])

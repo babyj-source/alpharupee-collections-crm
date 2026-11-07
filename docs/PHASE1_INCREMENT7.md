@@ -123,8 +123,19 @@ Built from Easebuzz's EasyCollect documentation ("Sub-merchant Create/Update Lin
 * **Payment tracking:** the CRM asks Easebuzz (`GET /easycollect/v1/get`, `payment_made`) every 20 seconds while the account is open, and
   `manage.py check_payment_links` does the same for every open link made in the last 7 days (run every minute by `crm-payments.timer`, installed with
   `deploy/server/install-payments-timer.sh`). A paid link shows "Paid", writes "Payment of ₹X received" on the timeline and is marked **waiting to be posted to the LMS**.
-  I could not find Easebuzz's payment-success webhook page, so no webhook is used; polling needs none.
+  Polling alone is enough; the webhook below makes it instant.
 * **Not built yet: posting the payment to the LMS** (needs Encore's repayment-posting API; the CRM's LMS access is read-only). Paid links keep `lms_state = pending`.
 * **Unverified until the first sandbox payment:** what Easebuzz returns in `payment_made` / `state` for a paid link (the documentation shows only unpaid examples). The CRM treats `payment_made >= 1` as paid.
 * **Switch on (server, as deploy):** `set-easebuzz.sh key` (asks for the key and the hidden salt), `set-easebuzz.sh submerchant <id>`, `set-easebuzz.sh sandbox`, `set-easebuzz.sh on`. `status` shows what is set. `production` switches to the live address.
 * **DLT:** the link's domain (pay.easebuzz.in) must be registered/whitelisted for the SMS templates, or operators may block the SMS.
+
+### Easebuzz webhook (part 8)
+
+* Easebuzz's **Transaction Webhook** (form-urlencoded POST whenever a payment changes state; only a 200 answer is accepted, retried every 30 minutes up to 5 times) is
+  received at `POST /api/payments/webhook?token=<EASEBUZZ_WEBHOOK_TOKEN>`. Register it in the Easebuzz Merchant Dashboard under Account Settings (Transaction webhook).
+* **The webhook never marks a payment paid by itself.** It finds the link (by `txnid` = our `merchant_txn`, or by `udf1 = CRM` and `udf2` = the LAN) and then makes the signed status call
+  (`GET /easycollect/v1/get`). A forged or odd call therefore cannot create a payment. If Easebuzz cannot be reached at that moment, the one-minute check picks it up.
+* Admin can read the last 30 calls at `GET /api/payments/webhook-log` (only txnid, status, amount, udf1/udf2, mode, easepayid, error, bank ref; no phone, e-mail or card data, plus `hash_ok`:
+  whether Easebuzz's response hash matched our reading of its documented order, for information only).
+* Make the address on the server: `set-easebuzz.sh token` (prints it). Unverified until the first real call: whether `txnid` is our `merchant_txn` for EasyCollect payments and whether `udf1`/`udf2`
+  carry over from the link; the lookup by `udf1`/`udf2` covers the second case.
