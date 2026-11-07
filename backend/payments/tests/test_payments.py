@@ -373,3 +373,52 @@ class WebhookTests(P):
         self.assertEqual(self.api(self.a2).get("/api/payments/webhook-log").status_code, 403)
         admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
         self.assertEqual(len(self.api(admin).get("/api/payments/webhook-log").json()), 1)
+
+
+@override_settings(**CFG)
+class TrackingScreenTests(P):
+    def setUp(self):
+        super().setUp()
+        Loan.objects.filter(pk=self.l1.pk).update(closure_amount=Decimal("5000"), closure_as_on=timezone.localdate())
+        mk = lambda loan, txn, amt, state, lms="", age=0: PaymentLink.objects.create(
+            loan=loan, merchant_txn=txn, amount=amt, payment_url=URL, state=state, lms_state=lms, created_by=self.a2)
+        self.p1 = mk(self.l2, "T1", 8980, "active")
+        self.p2 = mk(self.l2, "T2", 8000, "paid", "pending")
+        self.p3 = mk(self.l1, "T3", 5000, "paid", "failed")
+        self.p4 = mk(self.l1, "T4", 100, "expired")
+        PaymentLink.objects.filter(pk=self.p4.pk).update(created_at=timezone.now() - timedelta(days=40))
+
+    def ids(self, user, query=""):
+        r = self.api(user).get(f"/api/payments/links{query}")
+        self.assertEqual(r.status_code, 200, r.content)
+        return {x["ref"] for x in r.json()["results"]}
+
+    def test_agent_sees_only_links_on_own_accounts_and_head_sees_all(self):
+        self.assertEqual(self.ids(self.a2), {"T1", "T2"})
+        self.assertEqual(self.ids(self.a1), {"T3", "T4"})
+        self.assertEqual(self.ids(self.head), {"T1", "T2", "T3", "T4"})
+        self.assertEqual(self.api().get("/api/payments/links").status_code, 403)
+
+    def test_filters(self):
+        self.assertEqual(self.ids(self.head, "?state=paid"), {"T2", "T3"})
+        self.assertEqual(self.ids(self.head, "?lms=pending"), {"T2"})
+        self.assertEqual(self.ids(self.head, "?lms=failed"), {"T3"})
+        self.assertEqual(self.ids(self.head, "?lms=notpaid"), {"T1", "T4"})
+        self.assertEqual(self.ids(self.head, "?days=7"), {"T1", "T2", "T3"})
+        self.assertEqual(self.ids(self.head, f"?q={self.l1.account_id}"), {"T3", "T4"})
+        self.assertEqual(self.ids(self.head, "?state=bogus&lms=bogus"), {"T1", "T2", "T3", "T4"})
+
+    def test_rows_carry_what_the_screen_shows(self):
+        row = next(x for x in self.api(self.head).get("/api/payments/links?lms=pending").json()["results"])
+        self.assertEqual((row["account_id"], row["amount"], row["state"], row["lms"], row["lms_label"], row["by"]),
+                         ("L2", "8000.00", "paid", "pending", "Waiting to be posted to the LMS", "Agent Two"))
+        self.assertEqual((row["loan_id"], row["agent_name"]), (self.l2.pk, "Agent Two"))
+
+    def test_summary_tiles_follow_scope_and_days(self):
+        s = self.api(self.head).get("/api/payments/summary").json()
+        self.assertEqual((s["active"]["count"], s["paid"]["count"], s["expired"]["count"]), (1, 2, 1))
+        self.assertEqual((s["paid"]["amount"], s["lms_pending"]["count"], s["lms_failed"]["count"], s["lms_posted"]["count"]), ("13000.00", 1, 1, 0))
+        mine = self.api(self.a2).get("/api/payments/summary").json()
+        self.assertEqual((mine["active"]["count"], mine["paid"]["count"], mine["lms_failed"]["count"]), (1, 1, 0))
+        recent = self.api(self.head).get("/api/payments/summary?days=7").json()
+        self.assertEqual(recent["expired"]["count"], 0)

@@ -139,3 +139,11 @@ Built from Easebuzz's EasyCollect documentation ("Sub-merchant Create/Update Lin
   whether Easebuzz's response hash matched our reading of its documented order, for information only).
 * Make the address on the server: `set-easebuzz.sh token` (prints it). Unverified until the first real call: whether `txnid` is our `merchant_txn` for EasyCollect payments and whether `udf1`/`udf2`
   carry over from the link; the lookup by `udf1`/`udf2` covers the second case.
+
+### Payments screen (part 9)
+
+* Menu item **Payments** (every role; agents see links on their own accounts, head and admin see all). Tiles: waiting for payment, paid, waiting to post to the LMS, LMS posting failed,
+  posted to the LMS, expired (count and amount; click a tile to filter). Filters: search (account number, name, link reference), made in (today / 7 / 30 days / all), link status, LMS status.
+  The table shows made, account, borrower, amount, link status, paid at, LMS posting status, agent, and **Check** (asks Easebuzz now) for links waiting for payment. A row opens the account. Refreshes every 30 seconds.
+* API: `GET /api/payments/links?state=&lms=&q=&days=&page=` and `GET /api/payments/summary?q=&days=`. LMS values: pending / posted / failed; `lms=notpaid` = links not paid.
+* **LMS posting itself is not built** (needs Encore's repayment-posting API), so every paid link shows "Waiting to be posted to the LMS". The "posted" and "failed" tiles are ready for it; the Retry button for Admin/IT arrives with posting.

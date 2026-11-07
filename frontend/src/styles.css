@@ -141,3 +141,7 @@ button.danger:disabled { opacity: .6; }
 .paylink { display: grid; gap: 6px; margin-bottom: 8px; }
 .linkline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
 .linktext { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; user-select: all; }
+
+/* payment tracking screen */
+button.tile { text-align: left; color: var(--text); cursor: pointer; } button.tile:hover { background: var(--bg); }
+.kpi-value.bad { color: var(--err); }
