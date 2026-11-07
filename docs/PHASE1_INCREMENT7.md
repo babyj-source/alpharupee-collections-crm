@@ -147,3 +147,20 @@ Built from Easebuzz's EasyCollect documentation ("Sub-merchant Create/Update Lin
   The table shows made, account, borrower, amount, link status, paid at, LMS posting status, agent, and **Check** (asks Easebuzz now) for links waiting for payment. A row opens the account. Refreshes every 30 seconds.
 * API: `GET /api/payments/links?state=&lms=&q=&days=&page=` and `GET /api/payments/summary?q=&days=`. LMS values: pending / posted / failed; `lms=notpaid` = links not paid.
 * **LMS posting itself is not built** (needs Encore's repayment-posting API), so every paid link shows "Waiting to be posted to the LMS". The "posted" and "failed" tiles are ready for it; the Retry button for Admin/IT arrives with posting.
+
+### WhatsApp call buttons (part 10)
+
+**What MSG91 offers.** MSG91's only WhatsApp calling API is "WhatsApp Voice Call" (`POST /api/v5/whatsapp/integrated-number/call-settings`). It is a settings call: switch calling on or off for the business number, set call hours and holidays (max call 25 minutes, silence timeout 30 seconds). No MSG91 endpoint that places a call was found, and a business-initiated WhatsApp call also needs the customer's permission and a voice connection on the caller's side. So the CRM cannot make MSG91 ring a customer on WhatsApp.
+
+**What was built.**
+- A green **WhatsApp call** button in the WhatsApp chats header and, separately from the Smartflo **Call**, on every contact in the account screen's "Who to call" list.
+- The button asks `POST /api/messaging/whatsapp/call` {loan_id, which}. The server checks the same things as the Smartflo call (user can see the loan, account open, 08:00-19:00, valid mobile), writes "WhatsApp call opened to ..." on the timeline, audits `whatsapp_call_opened`, and returns a `https://wa.me/91XXXXXXXXXX` link. The browser opens it in the agent's own WhatsApp (app or WhatsApp Web) and the agent taps the call icon. The call is made by WhatsApp from the agent's WhatsApp account, not from the business number 918065075438.
+- `manage.py whatsapp_calling enable|disable [--hours]` switches calling on or off for the business number through the MSG91 settings API (so customers can call the business). The request body is the doc's plus `integrated_number`, which the doc's 400 message implies but does not show. MSG91's reply is printed as is. If it is refused, do it in the MSG91 panel.
+- Flag `WHATSAPP_CALL_ENABLED` (default off) controls the buttons; `/api/meta` returns `whatsapp_call_enabled`.
+
+**Switching on (server, as deploy):**
+```
+bash /opt/crm/current/server-tools/set-whatsapp.sh calls on
+bash /opt/crm/current/server-tools/set-whatsapp.sh calling enable      # optional: add --hours for 08:00-19:00 only
+```
+Not verified until used: MSG91 accepting the call-settings body, and whether Meta has Calling approved for the number.

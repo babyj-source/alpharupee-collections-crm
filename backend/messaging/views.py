@@ -16,6 +16,8 @@ from rest_framework.views import APIView
 from accounts.models import audit
 from accounts.permissions import IsAdmin, IsHead
 
+from loans.models import Activity
+from loans.phones import normalise_mobile
 from loans.views import scoped
 
 from .models import MessageLog, SmsTemplate, WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
@@ -283,3 +285,40 @@ class WhatsappWebhookLogView(APIView):
 
     def get(self, request):
         return Response([{"at": w.created_at, "handled": w.handled, "body": w.body} for w in WhatsappWebhookLog.objects.all()[:30]])
+
+
+class WhatsappCallSerializer(serializers.Serializer):
+    loan_id = serializers.IntegerField()
+    which = serializers.ChoiceField(choices=["borrower", "alt", "ref1", "ref2"], default="borrower")
+
+
+class WhatsappCallView(APIView):
+    """The agent's WhatsApp call button. Returns a wa.me link that opens this customer's chat in the agent's own WhatsApp
+    (app or WhatsApp Web), where the agent taps the call icon. MSG91 has no endpoint that places a call, so the call itself is
+    made by WhatsApp on the agent's side. Same gate as 'Show number': the user must be able to see the loan; it is audited and
+    appears in the account timeline."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "reveal"
+
+    def post(self, request):
+        from dialer.views import in_window
+        from loans.workflow import CALL_END_HOUR, CALL_START_HOUR
+        ser = WhatsappCallSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        d = ser.validated_data
+        if not settings.WHATSAPP_CALL_ENABLED:
+            return Response({"detail": "WhatsApp calling is switched off on this server."}, status=status.HTTP_400_BAD_REQUEST)
+        if not in_window():
+            return Response({"detail": f"Calling is only allowed between {CALL_START_HOUR:02d}:00 and {CALL_END_HOUR:02d}:00."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        loan = get_object_or_404(scoped(request.user, grants=True), pk=d["loan_id"])
+        if loan.operational_status.strip().lower() not in ("0", "active"):
+            return Response({"detail": "This account is closed."}, status=status.HTTP_400_BAD_REQUEST)
+        number = normalise_mobile(loan.number_for(d["which"]))
+        if not number or not (len(number) == 12 and number.startswith("91") and number[2] in "6789"):
+            return Response({"detail": "There is no valid mobile number for that contact."}, status=status.HTTP_400_BAD_REQUEST)
+        label = {"borrower": "borrower", "alt": "borrower's second number", "ref1": "reference 1", "ref2": "reference 2"}[d["which"]]
+        Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.CALL, detail=f"WhatsApp call opened to {label}")
+        audit(request, "whatsapp_call_opened", user=request.user, object_type="loan", object_id=loan.pk, detail=d["which"])
+        return Response({"url": f"https://wa.me/{number}"})

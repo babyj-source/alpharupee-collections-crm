@@ -1,3 +1,4 @@
+import { openWhatsappCall } from "./whatsappcall.js";
 import { useEffect, useRef, useState } from "react";
 import { api, inr } from "./api.js";
 import { clock, startCall, step } from "./callphase.js";
@@ -28,6 +29,7 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
   const [shown, setShown] = useState({}); // contact key -> full number, only while visible
   const [error, setError] = useState("");
   const [calling, setCalling] = useState("");
+  const [waCalling, setWaCalling] = useState("");
   const [callNote, setCallNote] = useState("");
   const [live, setLive] = useState(null); // call panel state, see callphase.js
   const [ending, setEnding] = useState(false);
@@ -69,6 +71,11 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
       loadTimeline();
       watchCall();
     } catch (e) { setError(e.message); } finally { setTimeout(() => setCalling(""), 4000); }
+  }
+  async function waCall(key) {
+    setError(""); setCallNote(""); setWaCalling(key);
+    try { await openWhatsappCall(loan.id, key); loadTimeline(); setCallNote("WhatsApp opened. Tap the call icon in the chat, then log the outcome below."); }
+    catch (e) { setError(e.message); } finally { setTimeout(() => setWaCalling(""), 2000); }
   }
   async function endCall() {
     setError(""); setEnding(true);
@@ -125,6 +132,9 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
                 {!shown[c.key] && <button className="ghost" onClick={() => reveal(c.key)}>Show number</button>}
                 {meta?.dialer_enabled && (
                   <button disabled={!!calling || inCall} onClick={() => call(c.key)}>{calling === c.key ? "Calling…" : "Call"}</button>
+                )}
+                {meta?.whatsapp_call_enabled && (
+                  <button className="wa-call" disabled={!!waCalling} onClick={() => waCall(c.key)} title="Opens this contact's chat in your WhatsApp. Tap the call icon there.">{waCalling === c.key ? "Opening…" : "WhatsApp call"}</button>
                 )}
               </div>
             </li>
