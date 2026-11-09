@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Count, ProtectedError, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -724,6 +725,19 @@ def _queue_rows(s, user, queue, attempts):
     return rows
 
 
+def _retry_release(s, user):
+    """The agent already saved the outcome in the CRM but Smartflo was not told (no Smartflo id for it then). Once an id exists, tell
+    Smartflo now, so the agent does not have to save the outcome again. Makes no call to Smartflo while there is still no id."""
+    if not (s.last_unique_id and s.last_loan_id and not s.released):
+        return
+    att = DialAttempt.objects.filter(session=s, call_id=s.last_unique_id).first()
+    since = att.started_at if att else s.started_at
+    code = (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, loan_id=s.last_loan_id, created_at__gte=since)
+            .order_by("-created_at").values_list("disposition", flat=True).first())
+    if code and _status_id(code) and cache.add(f"dialer-release-{s.pk}", 1, 15):
+        _release(s, code)
+
+
 class SessionView(APIView):
     """Polled by the Dialer screen. Shows who the agent is talking to, the agent's queue and what happened to each customer,
     and keeps the outcome pending until it is released."""
@@ -759,6 +773,7 @@ class SessionView(APIView):
             out["call"] = {"state": call["state"], "phase": call_phase(call["state"]), "seconds": call["seconds"]}
             out["candidates"] = [{"id": m.pk, "account_id": m.account_id, "borrower_name": m.borrower_name} for m in matches] if len(matches) > 1 else []
         _track_attempts(s, calls, queue, now)
+        _retry_release(s, request.user)
         s.refresh_from_db(fields=["released"])
         attempts = list(DialAttempt.objects.filter(session=s).select_related("loan"))
         out["queue"] = _queue_rows(s, request.user, queue, attempts)
@@ -811,9 +826,21 @@ def _status_id(code):
     return None
 
 
+def _ensure_outcome_ids():
+    """No outcome has a Smartflo id yet (nobody ran Campaigns, Setup, Call outcomes). Make or find the 'CRM call outcomes' list in Smartflo and
+    save every id, so the agent is not stuck. Safe to repeat: it finds what already exists."""
+    try:
+        smartflo_setup.provision_outcomes(get_client())
+    except Exception:       # never let set-up trouble hide the real message
+        pass
+
+
 def _release(s, code):
     """Tell Smartflo the outcome of the last call. Returns (ok, warning)."""
     sid = _status_id(code)
+    if not sid:
+        _ensure_outcome_ids()
+        sid = _status_id(code)
     if not sid:
         return False, f"Saved in the CRM, but no Smartflo disposition is set for “{DISPOSITION_LABELS.get(code, code)}”, so the dialler was not told."
     try:
