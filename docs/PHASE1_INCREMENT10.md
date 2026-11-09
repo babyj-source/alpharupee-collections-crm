@@ -47,3 +47,9 @@ Calls that rang but were never logged in the CRM, and were not started from the 
 
 ## Follow-up: clearer "Smartflo refused (422)" messages
 A 422 now shows Smartflo's field errors (for example "agent: ..."), and Create in Smartflo says whether the lead list or the campaign was the step that was refused. The lead list is kept, so pressing Create again reuses it.
+
+## Follow-up: Smartflo lists are read in full
+Smartflo returns lists (users, lead lists, campaigns, outcome lists) a page at a time. The CRM read only the first page, so a lead list that already existed further down was not found, and Create in Smartflo tried to make it again; Smartflo answers 422 to a duplicate. The lists are now read page by page (up to 30 pages of 100). A 422 or other refusal whose reply cannot be read now shows the start of the raw reply.
+
+## Follow-up: plain names for Smartflo
+Smartflo refused names with symbols (for example "CRM 8-15 DPD"; "DPD 0" and "Promise to pay" went through). The lead list and campaign names and descriptions the CRM sends are now letters, digits and single spaces only: "8-15 DPD" becomes "CRM 8 15 DPD". Campaigns already created keep their names.
