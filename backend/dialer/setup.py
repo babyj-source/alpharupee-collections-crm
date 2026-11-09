@@ -160,7 +160,10 @@ def provision_campaign(camp, client):
     if list_id:
         steps.append("The lead list already exists in Smartflo; using it.")
     else:
-        client.create_lead_list(list_name, f"Customers for {camp.label}", LEAD_FIELDS)
+        try:
+            client.create_lead_list(list_name, f"Customers for {camp.label}", LEAD_FIELDS)
+        except SmartfloError as exc:
+            raise SetupError(f"Smartflo would not create the lead list “{list_name}”. {exc}") from exc
         list_id = find_id(client.list_lead_lists(), name=list_name)
         if not list_id:
             raise SetupError("Smartflo created the lead list but did not say which id it has. Copy it from Smartflo and enter it by hand.")
@@ -173,7 +176,12 @@ def provision_campaign(camp, client):
     if cid:
         steps.append("A Smartflo campaign with this name already exists; using it.")
     else:
-        client.create_campaign(campaign_body(camp, list_id, dlist, agent_ids, caller_did_id(client)))
+        body = campaign_body(camp, list_id, dlist, agent_ids, caller_did_id(client))
+        try:
+            client.create_campaign(body)
+        except SmartfloError as exc:
+            raise SetupError(f"Smartflo would not create the campaign “{name}”. {exc} (The lead list was made and is kept; "
+                             f"press Create in Smartflo again after fixing this.)") from exc
         cid = find_id(client.list_campaigns(), name=name)
         if not cid:
             raise SetupError("Smartflo created the campaign but did not say which id it has. The lead list id was saved; "

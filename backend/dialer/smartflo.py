@@ -22,13 +22,33 @@ class SmartfloDisabled(SmartfloError):
     pass
 
 
+def _flatten(v, depth=0):
+    """Short text from a validation-error body: {"errors": {"agent": ["The agent field is required."]}} -> agent: The agent field is required."""
+    if depth > 3:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return "; ".join(f"{k}: {_flatten(x, depth + 1)}" if not str(k).isdigit() else _flatten(x, depth + 1) for k, x in list(v.items())[:6])
+    if isinstance(v, list):
+        return ", ".join(_flatten(x, depth + 1) for x in v[:6])
+    return ""
+
+
 def _msg(resp):
+    """What Smartflo said, for the screen: its message, plus the field errors of a 422. Never the request."""
     try:
         data = resp.json()
-        text = (data.get("message") or data.get("error") or data.get("detail") or "") if isinstance(data, dict) else ""
+        if isinstance(data, dict):
+            text = str(data.get("message") or data.get("error") or data.get("detail") or "")
+            more = _flatten(data.get("errors") or data.get("error_details") or "")
+            if more and more not in text:
+                text = f"{text} {more}".strip()
+        else:
+            text = ""
     except ValueError:
         text = ""
-    return re.sub(r"\s+", " ", str(text))[:160]
+    return re.sub(r"\s+", " ", str(text))[:300]
 
 
 def _id(v):

@@ -40,3 +40,10 @@ Nothing is needed if `SMARTFLO_CALLER_ID` is the number shown in Smartflo's My N
 
 ## Follow-up: "You are already logged in to this campaign" (422)
 When the agent still has a session in Smartflo from an earlier start (for example one the CRM had already closed on its side), the session-create call answers 422 with that message and tells you to go straight to the session call. The CRM now treats it as "session already there" and carries on to the session call. Any other refusal still stops the start and is shown to the agent.
+
+## Follow-up: the call log shows only CRM calls
+The call log lists a Smartflo call only if it is to a customer number on a CRM account and the CRM has a trace of it close to the call: a "call placed" entry (click-to-call), or an outcome logged on the account, from 10 minutes before the call starts to 60 minutes after it ends. Everything else Smartflo holds is left out, and a recording can only be played for such a call. Each row says who in the CRM placed or logged it. Smartflo pages (50 records) are filtered one at a time, so a page can have few or no CRM calls; the screen says how many records were checked.
+Calls that rang but were never logged in the CRM, and were not started from the CRM, do not appear.
+
+## Follow-up: clearer "Smartflo refused (422)" messages
+A 422 now shows Smartflo's field errors (for example "agent: ..."), and Create in Smartflo says whether the lead list or the campaign was the step that was refused. The lead list is kept, so pressing Create again reuses it.

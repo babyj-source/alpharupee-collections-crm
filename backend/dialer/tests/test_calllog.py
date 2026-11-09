@@ -1,6 +1,11 @@
 from unittest import mock
 
+from datetime import datetime
+
+from django.utils import timezone
+
 from accounts.models import AuditLog
+from loans.models import Activity
 from dialer import calllog, views
 from dialer.smartflo import SmartfloError
 from dialer.tests.test_dialer import ON, DialerBase
@@ -28,6 +33,11 @@ class Fake:
         return self.payload
 
 
+def stamp(a, date_time):
+    """Put an activity at a given local time (created_at is automatic)."""
+    Activity.objects.filter(pk=a.pk).update(created_at=timezone.make_aware(datetime.strptime(date_time, "%Y-%m-%d %H:%M:%S")))
+
+
 class CallLogTests(DialerBase):
     def use(self, fake):
         p = mock.patch.object(views, "get_client", return_value=fake)
@@ -35,23 +45,53 @@ class CallLogTests(DialerBase):
         self.addCleanup(p.stop)
         return fake
 
-    def test_rows_are_matched_to_accounts_and_never_show_numbers(self):
+    def crm_call(self, when="2026-11-07 11:53:00", kind="disposition", loan=None, user=None):
+        a = Activity.objects.create(loan=loan or self.l1, user=user or self.a1, kind=kind, disposition="no_answer" if kind == "disposition" else "")
+        stamp(a, when)
+        return a
+
+    def test_only_calls_placed_or_taken_in_the_crm_are_listed(self):
         self.use(Fake())
-        r = self.api(self.head).get("/api/dialer/calls?days=7")
+        self.crm_call()                                   # the agent logged an outcome 1 minute after c-1 ended
+        r = self.api(self.head).get("/api/dialer/calls?days=30")
         self.assertEqual(r.status_code, 200, r.content)
-        rows = r.json()["results"]
-        self.assertEqual(len(rows), 2)
-        self.assertEqual((rows[0]["account_id"], rows[0]["to"], rows[0]["has_recording"], rows[0]["agent"]), ("L1", "xxxxxx1111", True, "Asha K"))
-        self.assertEqual((rows[1]["account_id"], rows[1]["has_recording"]), ("", False))
+        d = r.json()
+        self.assertEqual([x["call_id"] for x in d["results"]], ["c-1"])      # c-2 is not on any CRM account; nothing else is shown
+        self.assertEqual(d["checked"], 2)
+        row = d["results"][0]
+        self.assertEqual((row["account_id"], row["to"], row["has_recording"], row["agent"], row["crm_user"], row["how"]),
+                         ("L1", "xxxxxx1111", True, "Asha K", "Agent One", "outcome logged in the CRM"))
         self.assertNotIn("919111111111", r.content.decode())
         self.assertNotIn("token=t", r.content.decode())               # recording links are never in the list
+
+    def test_a_call_placed_from_the_crm_counts_even_without_an_outcome(self):
+        self.use(Fake())
+        self.crm_call(when="2026-11-07 11:51:30", kind="call")        # the click, just before Smartflo's record starts
+        rows = self.api(self.head).get("/api/dialer/calls?days=30").json()["results"]
+        self.assertEqual((rows[0]["call_id"], rows[0]["how"]), ("c-1", "placed from the CRM"))
+
+    def test_calls_with_no_crm_trace_or_far_from_it_are_left_out(self):
+        self.use(Fake())
+        self.assertEqual(self.api(self.head).get("/api/dialer/calls?days=30").json()["results"], [])
+        self.crm_call(when="2026-11-07 14:30:00")                     # hours later: a different call
+        self.crm_call(when="2026-11-07 09:00:00", kind="call")        # hours earlier
+        self.assertEqual(self.api(self.head).get("/api/dialer/calls?days=30").json()["results"], [])
+        self.crm_call(when="2026-11-07 11:53:00", loan=self.l2)       # an outcome on an account that is not on this number
+        self.assertEqual(self.api(self.head).get("/api/dialer/calls?days=30").json()["results"], [])
+
+    def test_a_shared_number_shows_the_account_that_was_worked(self):
+        self.use(Fake())
+        self.crm_call(loan=self.l3)                                   # L3 shares L1's number in the test data
+        row = self.api(self.head).get("/api/dialer/calls?days=30").json()["results"][0]
+        self.assertEqual(row["account_id"], "L3")
 
     def test_filters_are_passed_on(self):
         f = self.use(Fake())
         self.api(self.head).get("/api/dialer/calls?status=missed&direction=outbound&page=2")
         self.assertEqual((f.calls[0]["call_type"], f.calls[0]["direction"], f.calls[0]["page"]), ("m", "outbound", 2))
-        rows = self.api(self.head).get("/api/dialer/calls?agent=ravi").json()["results"]
-        self.assertEqual([x["agent"] for x in rows], ["Ravi"])
+        self.crm_call()
+        self.assertEqual(len(self.api(self.head).get("/api/dialer/calls?days=30&agent=agent one").json()["results"]), 1)   # by the CRM user too
+        self.assertEqual(self.api(self.head).get("/api/dialer/calls?days=30&agent=nobody").json()["results"], [])
 
     def test_head_only_and_needs_smartflo_on(self):
         self.use(Fake())
@@ -65,8 +105,9 @@ class CallLogTests(DialerBase):
         self.assertEqual(r.status_code, 502)
         self.assertIn("boom", r.json()["detail"])
 
-    def test_recording_link_is_one_call_at_a_time_and_audited(self):
+    def test_recording_link_is_for_crm_calls_only_one_at_a_time_and_audited(self):
         self.use(Fake())
+        self.crm_call()
         r = self.api(self.head).post("/api/dialer/calls/recording", {"call_id": "c-1"}, format="json")
         self.assertEqual((r.status_code, r.json()["url"].startswith("https://cloudphone.example/")), (200, True))
         self.assertTrue(AuditLog.objects.filter(action="recording_played", object_id="c-1").exists())
@@ -74,9 +115,17 @@ class CallLogTests(DialerBase):
         self.assertEqual(self.api(self.head).post("/api/dialer/calls/recording", {}, format="json").status_code, 400)
         self.assertEqual(self.api(self.a1).post("/api/dialer/calls/recording", {"call_id": "c-1"}, format="json").status_code, 403)
 
+    def test_a_recording_of_a_call_outside_the_crm_is_refused(self):
+        self.use(Fake())
+        r = self.api(self.head).post("/api/dialer/calls/recording", {"call_id": "c-1"}, format="json")      # no CRM activity for it
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("not placed or taken in the CRM", r.json()["detail"])
+        self.assertFalse(AuditLog.objects.filter(action="recording_played").exists())
+
     def test_http_recording_link_is_refused(self):
-        bad = {"results": [{"call_id": "c-9", "recording_url": "http://x/y"}]}
+        bad = {"results": [{"call_id": "c-9", "recording_url": "http://x/y", "date": "2026-11-07", "time": "11:52:14", "client_number": "919111111111"}]}
         self.use(Fake(bad))
+        self.crm_call()
         self.assertEqual(self.api(self.head).post("/api/dialer/calls/recording", {"call_id": "c-9"}, format="json").status_code, 404)
 
     def test_parse_is_defensive(self):
