@@ -34,9 +34,12 @@ class FakeSmartflo:
 
     leads = {"data": []}
 
-    def list_leads(self, list_id):
+    def list_leads(self, list_id, number=None):
         self._do("list_leads", list_id)
         return self.leads
+
+    def update_campaign(self, campaign_id, body):
+        return self._do("update_campaign", campaign_id, body)
 
     def delete_lead(self, lead_id):
         return self._do("delete_lead", lead_id)

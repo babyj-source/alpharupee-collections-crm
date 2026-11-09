@@ -216,10 +216,13 @@ export default function Dialer() {
               </>
             )}
             {s.awaiting_outcome && (
-              <div className="row">
-                <strong>Log the outcome to get your next call.</strong>
-                <span className="grow" />
-                <button className="ghost" onClick={dismiss}>No outcome needed (nobody answered)</button>
+              <div className="outcome-owed" role="alert">
+                <strong>Log the outcome now. Smartflo will not ring your next customer until you do.</strong>
+                <div className="row">
+                  {s.current && !s.call && <button onClick={() => setOpen(s.current)}>Log outcome for {s.current.borrower_name || s.current.account_id}</button>}
+                  <span className="grow" />
+                  <button className="ghost" onClick={dismiss}>No outcome needed (nobody answered)</button>
+                </div>
               </div>
             )}
           </section>

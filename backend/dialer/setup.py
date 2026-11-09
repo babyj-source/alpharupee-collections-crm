@@ -28,7 +28,7 @@ CAMPAIGN_DEFAULTS = {
     "list_traversal_order": "1",                        # oldest lead first; the CRM pushes the highest days-past-due first
     "number_of_retry": "3", "retry_after_minutes": "120",
     "auto_disposition_cancel_duration": "60", "ring_timeout": "30", "queue_timeout": "10", "ring_strategy": "1",
-    "dial_status": ["0", "3", "9"],                     # new, not reachable, busy
+    "dial_status": ["0", "-1", "-5", "-8", "-9"],       # Smartflo's codes: new, undisposed (dialled, no outcome), call drop, missed by agent, queue missed
     "hide_lead_details": True, "update_lead_details": True, "agent_only_callback": True, "enable_web_form": 0,
 }
 
@@ -37,6 +37,20 @@ def clean_name(text, prefix="", limit=60):
     """A name Smartflo accepts: letters, digits and single spaces only (no dashes, dots, slashes or other symbols)."""
     t = re.sub(r"[^A-Za-z0-9]+", " ", f"{prefix} {text}").strip()
     return t[:limit].strip()
+
+
+RULE_KEYS = ("number_of_retry", "retry_after_minutes", "dial_status")
+
+
+def apply_dial_rules(camp, client):
+    """Push the CRM's retry rules (how many times, how long between, which lead statuses are dialled) to a campaign already made in
+    Smartflo. Campaigns made before the dial_status codes were corrected only dialled brand-new leads, so a customer Smartflo had
+    already tried once (status Undisposed) was never rung again."""
+    if not camp.smartflo_campaign_id:
+        raise SetupError("This campaign is not connected to Smartflo yet.")
+    body = {k: CAMPAIGN_DEFAULTS[k] for k in RULE_KEYS}
+    client.update_campaign(camp.smartflo_campaign_id, body)
+    return body
 
 
 class SetupError(Exception):
