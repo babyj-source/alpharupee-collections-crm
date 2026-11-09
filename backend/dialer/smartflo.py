@@ -188,6 +188,10 @@ class SmartfloClient:
         """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked)."""
         return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True)
 
+    def delete_lead(self, lead_id):
+        """Remove one lead by its own id (the lead_id Smartflo shows when the list is read)."""
+        return self._call("DELETE", f"/v1/broadcast/lead/{lead_id}", settings.SMARTFLO_API_TOKEN, bearer=True)
+
     def delete_leads(self, list_id, field, values):
         """Remove leads from a lead list by the value of one column (for example field_0 = mobile)."""
         return self._call("DELETE", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,

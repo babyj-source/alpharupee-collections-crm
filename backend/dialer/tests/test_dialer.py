@@ -38,6 +38,9 @@ class FakeSmartflo:
         self._do("list_leads", list_id)
         return self.leads
 
+    def delete_lead(self, lead_id):
+        return self._do("delete_lead", lead_id)
+
     def delete_leads(self, list_id, field, values):
         return self._do("delete_leads", list_id, field, list(values))
 
