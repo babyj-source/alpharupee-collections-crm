@@ -48,29 +48,30 @@ export default function CallLog() {
       )}
       <section className="card scroll">
         <table>
-          <thead><tr><th>When</th><th>Agent</th><th>Direction</th><th>Status</th><th className="r">Talk time</th><th>Customer</th><th>Account</th><th>Outcome</th><th>Campaign</th><th /></tr></thead>
+          <thead><tr><th>When</th><th>Agent</th><th>Direction</th><th>Status</th><th className="r">Talk time</th><th>Customer</th><th>Account</th><th>In the CRM</th><th>Outcome</th><th>Campaign</th><th /></tr></thead>
           <tbody>
-            {!d && !error && <tr><td colSpan="10" className="muted">Loading…</td></tr>}
+            {!d && !error && <tr><td colSpan="11" className="muted">Loading…</td></tr>}
             {d && d.results.map((r, i) => (
               <tr key={r.call_id || i}>
                 <td>{r.at}</td><td>{r.agent || "—"}</td><td>{r.direction}</td><td>{r.status}</td><td className="r">{secs(r.answered)}</td><td>{r.to || "—"}</td>
-                <td>{r.loan_id ? <button className="ghost" onClick={() => api(`/loans/${r.loan_id}`).then(setOpen).catch((e) => setError(e.message))}>{r.account_id}{r.borrower_name ? ` · ${r.borrower_name}` : ""}</button> : <span className="muted">not matched</span>}</td>
+                <td><button className="ghost" onClick={() => api(`/loans/${r.loan_id}`).then(setOpen).catch((e) => setError(e.message))}>{r.account_id}{r.borrower_name ? ` · ${r.borrower_name}` : ""}</button></td>
+                <td>{r.crm_user || "—"}<div className="muted small">{r.how}</div></td>
                 <td>{r.outcome || "—"}</td><td>{r.campaign || "—"}</td>
                 <td>{r.has_recording ? <button disabled={busy === r.call_id} onClick={() => play(r.call_id)}>{busy === r.call_id ? "…" : "Play"}</button> : <span className="muted small">none</span>}</td>
               </tr>
             ))}
-            {d && d.results.length === 0 && <tr><td colSpan="10" className="muted">No calls in this period.</td></tr>}
+            {d && d.results.length === 0 && <tr><td colSpan="11" className="muted">No CRM calls among the Smartflo records on this page.</td></tr>}
           </tbody>
         </table>
       </section>
       {d && (
         <div className="row">
           <button className="ghost" disabled={f.page <= 1} onClick={() => set("page", f.page - 1)}>Previous</button>
-          <span className="muted small">Page {d.page} · {num(d.count)} calls</span>
+          <span className="muted small">Smartflo page {d.page} · {num(d.results.length)} CRM calls among {num(d.checked)} records checked · {num(d.count)} records in the period</span>
           <button className="ghost" disabled={d.page * d.page_size >= d.count} onClick={() => set("page", f.page + 1)}>Next</button>
         </div>
       )}
-      <p className="muted small">Numbers are masked. A call is matched to an account by the customer's number; where several accounts share a number the open, overdue one is shown.</p>
+      <p className="muted small">Only calls placed or taken in the CRM are listed: a call to a customer on a CRM account that an agent started from the CRM, or logged an outcome for, close to the time of the call. Other Smartflo calls are left out, so some pages show few or none; use Next to go on. Numbers are masked.</p>
       {open && <Account loan={open} onClose={() => setOpen(null)} onChanged={setOpen} />}
     </div>
   );

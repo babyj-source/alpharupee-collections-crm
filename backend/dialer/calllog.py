@@ -1,9 +1,13 @@
 """Head's call log from Smartflo's call detail records, with a link to each recording.
 
+Only calls that belong to the CRM are shown: a call to a customer number on a CRM account that an agent placed from the CRM (a
+"call placed" entry on the account) or attended and logged an outcome for in the CRM, close to the time of the call. Everything else
+Smartflo holds (other teams, calls made outside the CRM) is left out.
+
 Shapes follow the 'Call Detail Records' page of Smartflo's API reference. Fields are read defensively; a record the CRM cannot read is
 shown with what could be read. Recording links carry Smartflo's own token, so they are only handed out one at a time, to Head or Admin,
 and every play is written to the audit log."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db.models import Q
 from django.utils import timezone
@@ -13,7 +17,7 @@ from rest_framework.views import APIView
 
 from accounts.models import audit
 from accounts.permissions import IsHead
-from loans.models import ACTIVE_Q, Loan
+from loans.models import ACTIVE_Q, Activity, Loan
 
 from . import views as v
 from .smartflo import SmartfloError, last10
@@ -44,20 +48,69 @@ def parse_records(payload):
     return count, rows
 
 
+BEFORE = timedelta(minutes=10)    # the click is logged a little before Smartflo's record starts (it rings the agent first)
+AFTER = timedelta(minutes=60)     # the agent may log the outcome some time after the call ended
+
+
 def _loans_by_number(numbers):
+    """{10-digit number: [loans on that number, open and overdue first]}"""
     nums = {n for n in numbers if n}
     if not nums:
         return {}
     q = Q()
     for n in nums:
         q |= Q(borrower_mobile__endswith=n) | Q(alt_mobile__endswith=n)
-    best = {}
+    out = {n: [] for n in nums}
     for loan in Loan.objects.filter(q).order_by("-id"):
-        rank = (_active(loan), (loan.dpd or 0) > 0)           # an open, overdue account beats a paid-up or closed one on the same number
         for n in nums:
-            if (loan.borrower_mobile.endswith(n) or loan.alt_mobile.endswith(n)) and (n not in best or rank > best[n][0]):
-                best[n] = (rank, loan)
-    return {n: x[1] for n, x in best.items()}
+            if loan.borrower_mobile.endswith(n) or loan.alt_mobile.endswith(n):
+                out[n].append(loan)
+    for loans in out.values():
+        loans.sort(key=lambda l: (_active(l), (l.dpd or 0) > 0), reverse=True)
+    return {n: v for n, v in out.items() if v}
+
+
+def _started(row):
+    """The call's start as an aware datetime, or None."""
+    try:
+        return timezone.make_aware(datetime.strptime(row["at"], FMT))
+    except (ValueError, TypeError):
+        return None
+
+
+def _crm_rows(rows):
+    """Keep only the calls the CRM placed or took, and add which account and which CRM user."""
+    by_number = _loans_by_number([r["number"] for r in rows])
+    times = {id(r): _started(r) for r in rows}
+    stamps = [t for t in times.values() if t]
+    acts = {}
+    ids = {l.pk for loans in by_number.values() for l in loans}
+    if stamps and ids:
+        qs = (Activity.objects.filter(loan_id__in=ids, kind__in=[Activity.Kind.CALL, Activity.Kind.DISPOSITION],
+                                      created_at__gte=min(stamps) - BEFORE, created_at__lte=max(stamps) + AFTER + timedelta(hours=1))
+              .select_related("user").order_by("created_at"))
+        for a in qs:
+            acts.setdefault(a.loan_id, []).append(a)
+    kept = []
+    for r in rows:
+        t = times[id(r)]
+        if t is None:
+            continue
+        try:
+            end = t + timedelta(seconds=int(r["duration"] or 0))
+        except (TypeError, ValueError):
+            end = t
+        hit = None
+        for loan in by_number.get(r["number"], []):
+            hit = next((a for a in acts.get(loan.pk, []) if t - BEFORE <= a.created_at <= end + AFTER), None)
+            if hit:
+                r["loan_id"], r["account_id"], r["borrower_name"] = loan.pk, loan.account_id, loan.borrower_name
+                r["crm_user"] = hit.user.name if hit.user else ""
+                r["how"] = "placed from the CRM" if hit.kind == Activity.Kind.CALL else "outcome logged in the CRM"
+                break
+        if hit:
+            kept.append(r)
+    return kept
 
 
 def _active(loan):
@@ -87,16 +140,15 @@ class CallLogView(APIView):
         except SmartfloError as exc:
             return v.bad(f"Smartflo refused the request. {exc}", 502)
         count, rows = parse_records(payload)
-        loans = _loans_by_number([r["number"] for r in rows])
+        checked = len(rows)
+        rows = _crm_rows(rows)
         for r in rows:
-            loan = loans.get(r["number"])
-            r["loan_id"], r["account_id"], r["borrower_name"] = (loan.pk, loan.account_id, loan.borrower_name) if loan else (None, "", "")
             r["to"] = "xxxxxx" + r["number"][-4:] if r["number"] else ""
             del r["number"]
         agent = (p.get("agent") or "").strip().lower()
         if agent:
-            rows = [r for r in rows if agent in r["agent"].lower()]
-        return Response({"count": count, "page": page, "page_size": PAGE, "results": rows})
+            rows = [r for r in rows if agent in r["agent"].lower() or agent in r["crm_user"].lower()]
+        return Response({"count": count, "checked": checked, "page": page, "page_size": PAGE, "results": rows})
 
 
 class RecordingView(APIView):
@@ -119,6 +171,9 @@ class RecordingView(APIView):
             return v.bad(f"Smartflo refused the request. {exc}", 502)
         d = payload if isinstance(payload, dict) else {}
         items = d.get("results") if isinstance(d.get("results"), list) else []
+        _count, parsed = parse_records({"results": [i for i in items if isinstance(i, dict) and str(i.get("call_id")) == call_id]})
+        if not _crm_rows(parsed):
+            return v.bad("That call was not placed or taken in the CRM.", 404)
         rec = next((i.get("recording_url") for i in items if isinstance(i, dict) and str(i.get("call_id")) == call_id and i.get("recording_url")), "")
         if not rec or not str(rec).startswith("https://"):
             return v.bad("Smartflo has no recording for this call.", 404)

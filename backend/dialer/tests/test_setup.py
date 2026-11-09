@@ -118,6 +118,29 @@ class SetupFlowTests(DialerBase):
         self.assertEqual((body["number_of_retry"], body["retry_after_minutes"], body["ring_timeout"]), ("3", "120", "30"))
         self.assertTrue(r.json()["campaign"]["configured"])
 
+    def test_a_refused_campaign_says_which_step_and_keeps_the_list(self):
+        from dialer.smartflo import SmartfloError as E
+        self.post(self.admin, "smartflo/outcomes")
+        self.fake.fail = {"create_campaign": E("Smartflo refused the request (422). The given data was invalid. agent: already in a campaign", status=422)}
+        r = self.post(self.admin, "smartflo/campaign/dpd8_15")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("would not create the campaign", r.json()["detail"])
+        self.assertIn("already in a campaign", r.json()["detail"])
+        camp = Campaign.objects.get(key="dpd8_15")
+        self.assertTrue(camp.smartflo_list_id)
+        self.assertFalse(camp.smartflo_campaign_id)
+        self.fake.fail = {}
+        self.assertEqual(self.post(self.admin, "smartflo/campaign/dpd8_15").status_code, 200)       # try again after the fix
+        self.assertEqual(len(self.fake.lead_lists), 1)                                              # the list was reused
+
+    def test_a_refused_lead_list_says_so(self):
+        from dialer.smartflo import SmartfloError as E
+        self.post(self.admin, "smartflo/outcomes")
+        self.fake.fail = {"create_lead_list": E("Smartflo refused the request (422). Name taken", status=422)}
+        r = self.post(self.admin, "smartflo/campaign/dpd8_15")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("would not create the lead list", r.json()["detail"])
+
     def test_existing_items_in_smartflo_are_adopted_not_duplicated(self):
         self.post(self.admin, "smartflo/outcomes")
         self.fake.lead_lists.append({"id": 777, "name": "CRM 8–15 days late"})
@@ -214,6 +237,16 @@ class ClientSetupTests(Base):
         self.assertEqual(h.sent["json"], {"disposition_status": "77", "unique_id": "u-1"})
         with self.assertRaisesMessage(SmartfloError, "Call not found"):
             SmartfloClient(self.Http(body={"success": False, "message": "Call not found"})).disposition("T", "u-1", 77)
+
+    @ON
+    def test_a_422_shows_the_field_errors_smartflo_sent(self):
+        body = {"success": False, "message": "The given data was invalid.", "errors": {"agent": ["The agent field is required."], "outbound_caller_id": ["Already in use."]}}
+        with self.assertRaises(SmartfloError) as cm:
+            SmartfloClient(self.Http(status=422, body=body)).create_lead_list("L", "d", ["A"])
+        text = str(cm.exception)
+        self.assertIn("(422)", text)
+        self.assertIn("agent: The agent field is required.", text)
+        self.assertIn("outbound_caller_id: Already in use.", text)
 
     @ON
     def test_a_session_that_already_exists_is_not_an_error(self):
