@@ -32,6 +32,7 @@ class DispositionMap(models.Model):
 
     crm_code = models.CharField(max_length=30, unique=True)
     smartflo_status_id = models.CharField(max_length=20, blank=True)
+    smartflo_code = models.CharField(max_length=10, blank=True, help_text="the outcome's short code in Smartflo (5 letters at most)")
 
 
 class DialerProfile(models.Model):
