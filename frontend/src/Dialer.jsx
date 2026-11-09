@@ -30,8 +30,13 @@ export default function Dialer() {
     return () => clearInterval(t);
   }, [session?.active, refresh]);
   useEffect(() => {
+    // The customer window opens by itself once per call: when the customer picks up, or (if the page missed that) when the call ends and an outcome is owed.
     const cur = session?.current;
-    if (cur && shown.current !== cur.id && session.awaiting_outcome) { shown.current = cur.id; setOpen(cur); }
+    if (!cur) return;
+    const row = (session.queue || []).find((r) => r.id === cur.id);
+    const key = `${cur.id}:${row ? row.attempts : 0}`;
+    const connected = session.call?.phase === "connected";
+    if (shown.current !== key && (connected || (!session.call && session.awaiting_outcome))) { shown.current = key; setOpen(cur); }
   }, [session]);
 
   async function start(e) {
@@ -133,44 +138,90 @@ export default function Dialer() {
                 : push.total === 0 ? "You have no new customers in this campaign, so nothing was sent. Smartflo dials whoever is already in its list." : ""}</p>
             )}
             {push?.error && <p className="error" role="alert">Smartflo took {num(push.sent)} of {num(push.total)} customers. {push.error}</p>}
-            <div className="row"><button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button></div>
             {s.warning && <p className="error" role="alert">{s.warning}</p>}
             {s.unparsed_fields?.length > 0 && (
               <p className="muted small">Smartflo sent call details in a format the CRM does not recognise yet (fields: {s.unparsed_fields.join(", ")}). Tell the Admin.</p>
             )}
+            {s.stats && (
+              <div className="stats" aria-label="Campaign progress">
+                <div><strong>{num(s.stats.total)}</strong><span className="muted small">In the list</span></div>
+                <div><strong>{num(s.stats.waiting)}</strong><span className="muted small">Waiting</span></div>
+                <div><strong>{num(s.stats.calling)}</strong><span className="muted small">Calling now</span></div>
+                <div><strong>{num(s.stats.done)}</strong><span className="muted small">Done</span></div>
+                <div><strong>{num(s.stats.no_answer)}</strong><span className="muted small">Not answered</span></div>
+                <div><strong>{num(s.stats.pending)}</strong><span className="muted small">Outcome owed</span></div>
+              </div>
+            )}
+            <div className="row"><button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button></div>
           </section>
 
-          {!s.current && !s.call && <p className="card muted">Waiting for the next call. Smartflo dials the next customer by itself.</p>}
-
-          {s.current && (
-            <section className="card">
+          <section className={`card nowcall${s.call ? " live" : ""}`} aria-live="polite">
+            {!s.current && !s.call && <p className="muted">Waiting for Smartflo to dial the next customer. It starts by itself; this page updates every few seconds.</p>}
+            {s.call && !s.current && <p>On a call with a number that is not on any CRM account. You can end the call normally.</p>}
+            {s.current && (
+              <>
+                <div className="row">
+                  <span className={`chip ${s.call?.phase === "connected" ? "ok" : s.call ? "today" : ""}`}>
+                    {!s.call ? "Call ended" : s.call.phase === "connected" ? `Connected${s.call.seconds ? ` · ${Math.floor(s.call.seconds / 60)}:${String(s.call.seconds % 60).padStart(2, "0")}` : ""}` : "Ringing…"}
+                  </span>
+                  <strong>{s.current.borrower_name || "—"}</strong>
+                  <span className="muted small">{s.current.account_id} · {inr(s.current.overdue_amount)} · {s.current.dpd} DPD</span>
+                  <span className="grow" />
+                  <button className="ghost" onClick={() => setOpen(s.current)}>Open customer</button>
+                </div>
+                {s.candidates?.length > 1 && (
+                  <p className="small">This number is on {s.candidates.length} accounts:{" "}
+                    {s.candidates.map((c) => <button key={c.id} className="ghost" onClick={() => pick(c)}>{c.account_id}</button>)}
+                  </p>
+                )}
+              </>
+            )}
+            {s.awaiting_outcome && (
               <div className="row">
-                <span className={`chip ${s.call ? "today" : "ok"}`}>{s.call ? `On a call${s.call.state ? ` · ${s.call.state}` : ""}` : "Call ended"}</span>
+                <strong>Log the outcome to get your next call.</strong>
                 <span className="grow" />
-                <button className="ghost" onClick={() => setOpen(s.current)}>Open account</button>
+                <button className="ghost" onClick={dismiss}>No outcome needed (nobody answered)</button>
               </div>
-              <dl>
-                <dt>Borrower</dt><dd>{s.current.borrower_name || "—"}</dd>
-                <dt>Account</dt><dd>{s.current.account_id}</dd>
-                <dt>Overdue</dt><dd>{inr(s.current.overdue_amount)} · {s.current.dpd} DPD</dd>
-                <dt>Closure</dt><dd>{inr(s.current.closure_amount)}</dd>
-                <dt>Allocated to</dt><dd>{s.current.agent ? s.current.agent.name : "Nobody yet"}</dd>
-              </dl>
-              {s.candidates?.length > 1 && (
-                <p className="small">This number is on {s.candidates.length} accounts:{" "}
-                  {s.candidates.map((c) => <button key={c.id} className="ghost" onClick={() => pick(c)}>{c.account_id}</button>)}
-                </p>
-              )}
+            )}
+          </section>
+
+          <section className="card">
+            <h3 style={{ marginTop: 0 }}>Customers in this campaign</h3>
+            {(s.queue || []).length === 0 && <p className="muted small">No customers of yours are in this campaign today.</p>}
+            {(s.queue || []).length > 0 && (
+              <div className="tablewrap">
+                <table className="queue">
+                  <thead><tr><th>Customer</th><th>Account</th><th>DPD</th><th>Overdue</th><th>Status</th><th>Tries</th><th>Last</th></tr></thead>
+                  <tbody>
+                    {s.queue.map((r) => (
+                      <tr key={r.id} className={`q-${r.status}`}>
+                        <td>{r.borrower_name || "—"}</td>
+                        <td>{r.account_id}</td>
+                        <td>{r.dpd}</td>
+                        <td>{inr(r.overdue_amount)}</td>
+                        <td><span className={`chip ${r.status === "on_call" ? "ok" : r.status === "calling" || r.status === "outcome_pending" ? "today" : ""}`}>{r.status_text}</span></td>
+                        <td>{r.attempts || "—"}</td>
+                        <td>{r.last_at ? clock(r.last_at) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {(s.log || []).length > 0 && (
+            <section className="card">
+              <h3 style={{ marginTop: 0 }}>Calls in this session</h3>
+              <ul className="calllog">
+                {s.log.map((l) => (
+                  <li key={l.id}><span className="muted small">{clock(l.at)}</span> <strong>{l.borrower_name || l.account_id || "Unknown number"}</strong> <span className="muted small">{l.account_id}</span> <span className="chip">{l.result}</span></li>
+                ))}
+              </ul>
             </section>
           )}
-
-          {s.call && !s.current && <p className="card">On a call with a number that is not on any CRM account. You can end the call normally.</p>}
-
-          {s.awaiting_outcome && (
-            <section className="card">
-              <p><strong>Log the outcome to get your next call.</strong></p>
-              <button className="ghost" onClick={dismiss}>No outcome needed (nobody answered)</button>
-            </section>
+          {s.live && (
+            <p className="muted small">Live-call check: Smartflo reported {s.live.seen} call{s.live.seen === 1 ? "" : "s"} for you ({s.live.via === "agent" ? "by your agent number" : s.live.via === "account" ? "by your customers' numbers" : "none found"}).</p>
           )}
         </>
       )}

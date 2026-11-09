@@ -53,3 +53,14 @@ Smartflo returns lists (users, lead lists, campaigns, outcome lists) a page at a
 
 ## Follow-up: plain names for Smartflo
 Smartflo refused names with symbols (for example "CRM 8-15 DPD"; "DPD 0" and "Promise to pay" went through). The lead list and campaign names and descriptions the CRM sends are now letters, digits and single spaces only: "8-15 DPD" becomes "CRM 8 15 DPD". Campaigns already created keep their names.
+
+## Follow-up: live campaign screen and call tracking (2026-11-09)
+
+Reported on UAT with the Promise to pay campaign: the call connected but the customer window did not open, and the screen did not show the customer list or what happens after the first call ends.
+
+What changed:
+- The Campaigns screen (agent) now follows the prototype: progress counters, a "calling now" strip, the list of the agent's customers with a status each (Waiting, Calling, On a call, Outcome owed, Not answered, outcome name), tries and last-call time, and a log of calls in the session.
+- The customer window opens by itself, once per call, when the customer picks up (or, if the page missed that, when the call ends and an outcome is owed).
+- A call that rings but is never answered needs no outcome: it is released automatically, shown as "Not answered", and the next customer shows as Calling.
+- Live calls are looked up by the agent's number first. If Smartflo returns nothing for that filter, the CRM looks at the account's live calls and keeps only those matching this agent's customers. The page shows a small line saying how many live calls were seen and how (by agent number, by customers' numbers, none), to diagnose if the pop-up still fails.
+- New table DialAttempt (migration 0005): one row per call in a session. No phone numbers are returned by the session endpoint.

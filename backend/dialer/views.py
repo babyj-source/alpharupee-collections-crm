@@ -22,7 +22,7 @@ from loans.serializers import LoanSerializer
 from loans.views import DispositionView, scoped
 from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITION_LABELS, DISPOSITIONS
 
-from .models import Campaign, CampaignPush, DialerProfile, DialerSession, DispositionMap, PushedLead
+from .models import Campaign, CampaignPush, DialAttempt, DialerProfile, DialerSession, DispositionMap, PushedLead
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
 from . import setup as smartflo_setup
 from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls
@@ -479,8 +479,102 @@ def _match(number):
     return list(Loan.objects.filter(ACTIVE_Q).filter(Q(borrower_mobile=m) | Q(alt_mobile=m)))
 
 
+QUEUE_MAX = 300
+
+
+def _queue(s, user):
+    """This agent's customers sent to Smartflo today for this campaign, in the order they were sent (highest days past due first)."""
+    ids = PushedLead.objects.filter(campaign=s.campaign, pushed_on=timezone.localdate(), user=user).values_list("loan_id", flat=True)
+    return list(Loan.objects.filter(pk__in=list(ids)).order_by("-dpd", "account_id")[:QUEUE_MAX])
+
+
+def _live_for_agent(s, user, profile, queue):
+    """The agent's live calls. Smartflo's own filter by agent number first; if it shows nothing, every live call on the account, kept
+    only where the customer is one of this agent's queue (a dialled call may not carry the agent's number until it is bridged).
+    Returns (calls, unparsed, via, warning)."""
+    client, warning = get_client(), ""
+    try:
+        calls, unparsed = parse_live_calls(client.live_calls(unseal(s.token_enc), profile.agent_number if profile and profile.agent_number else None))
+        if calls:
+            return calls, unparsed, "agent", warning
+    except SmartfloError as exc:
+        warning, unparsed = str(exc), []
+    mine = {last10(x) for loan in queue for x in (loan.borrower_mobile, loan.alt_mobile)} - {""}
+    if not mine:
+        return [], unparsed, "none", warning
+    try:
+        calls, more = parse_live_calls(client.live_calls(settings.SMARTFLO_API_TOKEN, None))
+    except SmartfloError as exc:
+        return [], unparsed, "none", warning or str(exc)
+    calls = [c for c in calls if c["number"] in mine]
+    return calls, unparsed or more, ("account" if calls else "none"), warning if not calls else ""
+
+
+def _track_attempts(s, calls, queue, now):
+    """Remember each call Smartflo makes for this session, and when it connected and ended. A call that ended without ever connecting
+    needs no outcome, so the agent is not held up."""
+    by_number = {}
+    for loan in queue:
+        for x in (loan.borrower_mobile, loan.alt_mobile):
+            if last10(x):
+                by_number.setdefault(last10(x), loan)
+    live_ids = set()
+    for c in calls:
+        live_ids.add(c["id"])
+        phase = call_phase(c["state"])
+        loan = by_number.get(c["number"])
+        if loan is None:
+            matches = _match(c["number"])
+            loan = max(matches, key=lambda l: l.overdue_amount) if matches else None
+        att, _ = DialAttempt.objects.get_or_create(session=s, call_id=c["id"], defaults={"loan": loan, "started_at": now, "state": phase})
+        if att.state == "ended":
+            att.state, att.ended_at = phase, None
+        if phase == "connected":
+            att.state = "connected"
+            att.connected_at = att.connected_at or now
+        att.last_seen_at = now
+        att.save()
+    for att in DialAttempt.objects.filter(session=s).exclude(state="ended").exclude(call_id__in=live_ids):
+        att.state, att.ended_at = "ended", now
+        att.save(update_fields=["state", "ended_at"])
+        if att.connected_at is None and s.last_unique_id == att.call_id and not s.released:
+            s.released = True
+            s.save(update_fields=["released"])
+
+
+def _queue_rows(s, user, queue, attempts):
+    outcomes = {}
+    for a in Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, created_at__gte=s.started_at,
+                                     loan_id__in=[l.pk for l in queue]).order_by("created_at"):
+        outcomes[a.loan_id] = a.disposition
+    per_loan = {}
+    for att in attempts:
+        per_loan.setdefault(att.loan_id, []).append(att)
+    rows = []
+    for loan in queue:
+        mine = per_loan.get(loan.pk, [])
+        latest = mine[0] if mine else None            # attempts are newest first
+        if latest and latest.state == "connected":
+            code, text = "on_call", "On a call"
+        elif latest and latest.state == "ringing":
+            code, text = "calling", "Calling now"
+        elif loan.pk in outcomes:
+            code, text = "done", DISPOSITION_LABELS.get(outcomes[loan.pk], "Outcome saved")
+        elif latest and any(a.connected_at for a in mine):
+            code, text = "outcome_pending", "Spoke · outcome not saved"
+        elif latest:
+            code, text = "no_answer", "Not answered"
+        else:
+            code, text = "waiting", "Waiting"
+        rows.append({"id": loan.pk, "account_id": loan.account_id, "borrower_name": loan.borrower_name, "dpd": loan.dpd,
+                     "overdue_amount": loan.overdue_amount, "status": code, "status_text": text, "attempts": len(mine),
+                     "last_at": latest.started_at if latest else None})
+    return rows
+
+
 class SessionView(APIView):
-    """Polled by the Dialer screen. Shows who the agent is talking to, and keeps the outcome pending until it is released."""
+    """Polled by the Dialer screen. Shows who the agent is talking to, the agent's queue and what happened to each customer,
+    and keeps the outcome pending until it is released."""
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "dial"
@@ -493,25 +587,44 @@ class SessionView(APIView):
         if enabled():
             keep_fresh(s, get_client())
         out = {"active": True, "campaign": {"key": s.campaign.key, "label": s.campaign.label}, "expires_at": s.token_expires_at,
-               "call": None, "candidates": [], "current": None, "awaiting_outcome": False, "warning": "", "unparsed_fields": []}
-        calls, unparsed = [], []
-        try:
-            calls, unparsed = parse_live_calls(get_client().live_calls(unseal(s.token_enc), (p.agent_number if p and p.agent_number else "")))
-        except SmartfloError as exc:
-            out["warning"] = str(exc)
-        out["unparsed_fields"] = unparsed
-        s.last_seen_at, s.on_call = timezone.now(), bool(calls)
+               "call": None, "candidates": [], "current": None, "awaiting_outcome": False, "warning": "", "unparsed_fields": [],
+               "queue": [], "stats": {}, "log": [], "live": {"seen": 0, "via": "none"}}
+        now = timezone.now()
+        queue = _queue(s, request.user)
+        calls, unparsed, via, warning = _live_for_agent(s, request.user, p, queue)
+        out["warning"], out["unparsed_fields"], out["live"] = warning, unparsed, {"seen": len(calls), "via": via}
+        s.last_seen_at, s.on_call = now, bool(calls)
         s.save(update_fields=["last_seen_at", "on_call"])
         if calls:
             call = calls[0]
             matches = _match(call["number"])
             if call["id"] != s.last_unique_id:
-                best = max(matches, key=lambda l: l.overdue_amount) if matches else None
+                inq = next((l for l in queue if call["number"] in {last10(l.borrower_mobile), last10(l.alt_mobile)}), None)
+                best = inq or (max(matches, key=lambda l: l.overdue_amount) if matches else None)
                 s.last_unique_id, s.last_loan, s.released = call["id"], best, False
                 s.save(update_fields=["last_unique_id", "last_loan", "released"])
                 _grant(request.user, matches)
-            out["call"] = {"state": call["state"]}
+            out["call"] = {"state": call["state"], "phase": call_phase(call["state"]), "seconds": call["seconds"]}
             out["candidates"] = [{"id": m.pk, "account_id": m.account_id, "borrower_name": m.borrower_name} for m in matches] if len(matches) > 1 else []
+        _track_attempts(s, calls, queue, now)
+        s.refresh_from_db(fields=["released"])
+        attempts = list(DialAttempt.objects.filter(session=s).select_related("loan"))
+        out["queue"] = _queue_rows(s, request.user, queue, attempts)
+        counts = defaultdict(int)
+        for r in out["queue"]:
+            counts[r["status"]] += 1
+        out["stats"] = {"total": len(out["queue"]), "waiting": counts["waiting"], "calling": counts["calling"] + counts["on_call"],
+                        "done": counts["done"], "no_answer": counts["no_answer"], "pending": counts["outcome_pending"]}
+        for att in attempts[:12]:
+            secs = int(((att.ended_at or now) - att.connected_at).total_seconds()) if att.connected_at else 0
+            result = ("On a call" if att.state == "connected" else "Ringing" if att.state == "ringing"
+                      else f"Spoke {secs // 60}:{secs % 60:02d}" if att.connected_at else "Not answered")
+            out["log"].append({"id": att.pk, "at": att.started_at, "account_id": att.loan.account_id if att.loan else "",
+                               "borrower_name": att.loan.borrower_name if att.loan else "", "result": result})
+        if out["call"] and out["call"]["phase"] == "connected":
+            live = next((a for a in attempts if a.state == "connected"), None)
+            if live and live.connected_at:
+                out["call"]["seconds"] = max(out["call"]["seconds"], int((now - live.connected_at).total_seconds()))
         out["awaiting_outcome"] = bool(s.last_unique_id and not s.released)
         if s.last_loan_id and (out["call"] or out["awaiting_outcome"]):
             loan = scoped(request.user, grants=True).filter(pk=s.last_loan_id).first()

@@ -239,8 +239,9 @@ class SmartfloClient:
         _refusal(data, "Smartflo did not take the outcome.")
         return data
 
-    def live_calls(self, token, agent_number):
-        return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number})
+    def live_calls(self, token, agent_number=None):
+        """Calls in progress. With an agent number: that agent's. Without: every live call on the account (account token)."""
+        return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number} if agent_number else None)
 
     def click_to_call(self, token, agent_number, destination, in_session=False):
         """in_session: the agent has a running dialler session, so this is Smartflo's 'manual dial from the dialler panel'

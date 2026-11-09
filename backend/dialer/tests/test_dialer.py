@@ -48,7 +48,7 @@ class FakeSmartflo:
     def disposition(self, token, unique_id, status_id):
         return self._do("disposition", token, unique_id, status_id)
 
-    def live_calls(self, token, agent_number):
+    def live_calls(self, token, agent_number=None):
         self._do("live_calls", agent_number)
         return self.live
 
@@ -413,7 +413,10 @@ class SessionTests(DialerBase):
         self.assertEqual((d["active"], d["call"]["state"], d["awaiting_outcome"], d["current"]["account_id"]), (True, "ringing", True, "L1"))
         self.assertNotIn("9111111111", str(d))   # masked
         self.assertEqual(DialerSession.objects.get().last_unique_id, "c-1")
-        self.fake.live = {"data": []}             # call ended, outcome still owed
+        self.fake.live = {"data": [{"call_id": "c-1", "customer_number": "9111111111", "status": "answered"}]}     # the customer picks up
+        d = self.api(self.a1).get("/api/dialer/session").json()
+        self.assertEqual((d["call"]["phase"], d["awaiting_outcome"]), ("connected", True))
+        self.fake.live = {"data": []}             # call ended after a conversation, outcome still owed
         d = self.api(self.a1).get("/api/dialer/session").json()
         self.assertEqual((d["call"], d["awaiting_outcome"], d["current"]["account_id"]), (None, True, "L1"))
 

@@ -162,3 +162,16 @@ button.wa-call:hover:not(:disabled) { background: #178045; }
 tr.on { background: var(--bg); }
 .filters select { min-width: 140px; }
 audio { max-width: 100%; }
+
+/* Dialler: live campaign screen */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin: 10px 0; }
+.stats > div { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.stats strong { font-size: 1.25rem; }
+.nowcall { border-left: 4px solid var(--line); }
+.nowcall.live { border-left-color: var(--accent); }
+.queue { width: 100%; border-collapse: collapse; }
+.queue th, .queue td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.queue tr.q-calling td, .queue tr.q-on_call td { background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 600; }
+.queue tr.q-done td { color: var(--muted, #6b7280); }
+.tablewrap { overflow-x: auto; }
+.calllog { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }

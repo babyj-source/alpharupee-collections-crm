@@ -91,3 +91,20 @@ class SmartfloSetting(models.Model):
 
     key = models.CharField(max_length=40, unique=True)
     value = models.CharField(max_length=120, blank=True)
+
+
+class DialAttempt(models.Model):
+    """One call Smartflo made for an agent's session, as the CRM saw it while the Dialer screen was open. Holds no phone numbers."""
+
+    session = models.ForeignKey(DialerSession, on_delete=models.CASCADE, related_name="attempts")
+    loan = models.ForeignKey("loans.Loan", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    call_id = models.CharField(max_length=80)
+    state = models.CharField(max_length=12, default="ringing")  # ringing, connected, ended
+    started_at = models.DateTimeField()
+    connected_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["session", "call_id"], name="uniq_attempt_call")]
