@@ -452,6 +452,36 @@ class SessionPushView(APIView):
         return Response({"sent": sent, "total": total, "error": error})
 
 
+class SessionResendView(APIView):
+    """Start this agent's customers in Smartflo from scratch: remove the ones sent today from the Smartflo list, then send them again.
+    Smartflo remembers which leads it has already dialled (and waits before retrying), so a customer tried earlier today would otherwise
+    not be rung again."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        s, _ = current_session(request.user)
+        if not s:
+            return bad("Start the campaign first.")
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        client, today = get_client(), timezone.localdate()
+        mine = PushedLead.objects.filter(campaign=s.campaign, pushed_on=today, user=request.user)
+        accounts = list(Loan.objects.filter(pk__in=mine.values("loan_id")).values_list("account_id", flat=True))
+        warning = ""
+        if accounts:
+            try:
+                client.delete_leads(s.campaign.smartflo_list_id, "field_2", accounts)
+            except SmartfloError as exc:
+                warning = f"Smartflo would not clear the old entries ({str(exc)[:160]}). They were sent again anyway."
+        mine.delete()
+        sent, total, error = push_for_agent(s.campaign, request.user, client)
+        audit(request, "campaign_resent", user=request.user, object_type="campaign", object_id=s.campaign_id,
+              detail=f"{s.campaign.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
+        return Response({"sent": sent, "total": total, "error": error, "warning": warning})
+
+
 class SessionStopView(APIView):
     def post(self, request):
         s, _ = current_session(request.user)

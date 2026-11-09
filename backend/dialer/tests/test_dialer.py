@@ -32,6 +32,9 @@ class FakeSmartflo:
     def bulk_add_leads(self, list_id, rows):
         return self._do("bulk_add_leads", list_id, rows)
 
+    def delete_leads(self, list_id, field, values):
+        return self._do("delete_leads", list_id, field, list(values))
+
     def probe(self):
         self._do("probe")
         return {"success": True, "data": []}

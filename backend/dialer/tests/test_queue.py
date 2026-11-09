@@ -1,4 +1,5 @@
 from dialer.models import DialAttempt, DispositionMap, PushedLead
+from dialer.smartflo import SmartfloError
 from dialer.tests.test_dialer import DialerBase
 
 
@@ -69,3 +70,20 @@ class QueueTests(DialerBase):
         self.live("9222222222")
         d = self.poll()
         self.assertEqual((d["queue"], d["call"]["phase"]), ([], "ringing"))
+
+    def test_start_from_scratch_clears_then_resends_only_this_agents_customers(self):
+        self.fake.calls.clear()
+        r = self.post(self.a1, "session/resend")
+        self.assertEqual((r.status_code, r.json()["sent"], r.json()["total"], r.json()["warning"]), (200, 1, 1, ""))
+        self.assertEqual([c[0] for c in self.fake.calls if c[0] in ("delete_leads", "bulk_add_leads")], ["delete_leads", "bulk_add_leads"])
+        self.assertEqual([c for c in self.fake.calls if c[0] == "delete_leads"][0][2:], ("field_2", ["L1"]))
+        self.assertEqual(PushedLead.objects.count(), 1)
+
+    def test_resend_still_sends_when_smartflo_cannot_clear(self):
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (404).")}
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual((r["sent"], "would not clear" in r["warning"]), (1, True))
+
+    def test_resend_needs_a_running_campaign(self):
+        self.post(self.a1, "session/stop")
+        self.assertEqual(self.post(self.a1, "session/resend").status_code, 400)
