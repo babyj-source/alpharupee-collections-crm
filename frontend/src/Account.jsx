@@ -23,7 +23,7 @@ function addDays(iso, n) {
 }
 
 // outcomePath: send the outcome somewhere else (the Dialer screen saves it and releases the agent in Smartflo).
-export default function Account({ loan: first, onClose, onChanged, outcomePath, onDialer }) {
+export default function Account({ loan: first, onClose, onChanged, outcomePath, onDialer, dialCall }) {
   const [loan, setLoan] = useState(first);
   const [meta, setMeta] = useState(null);
   const [timeline, setTimeline] = useState([]);
@@ -143,6 +143,12 @@ export default function Account({ loan: first, onClose, onChanged, outcomePath, 
             </li>
           ))}
         </ul>
+        {!live && dialCall && (
+          <div className={`callpanel ${dialCall.phase}`} role="status" aria-live="polite">
+            <strong>{dialCall.phase === "connected" ? "Connected" : "Ringing…"}</strong>
+            <button className="danger" disabled={ending} onClick={endCall}>{ending ? "Ending…" : "End call"}</button>
+          </div>
+        )}
         {live && (
           <div className={`callpanel ${live.phase}`} role="status" aria-live="polite">
             <strong>

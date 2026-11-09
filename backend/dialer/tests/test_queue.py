@@ -87,3 +87,20 @@ class QueueTests(DialerBase):
     def test_resend_needs_a_running_campaign(self):
         self.post(self.a1, "session/stop")
         self.assertEqual(self.post(self.a1, "session/resend").status_code, 400)
+
+    def test_an_outcome_with_no_smartflo_id_borrows_a_similar_one_so_the_agent_is_released(self):
+        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="")
+        DispositionMap.objects.filter(crm_code="will_pay_no_date").update(smartflo_status_id="777")   # same group as "PTP given"
+        self.live("9111111111")
+        self.poll()
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "ptp_given", "ptp_date": str(self.day(2)), "ptp_reason": "forgot"}).json()
+        self.assertEqual((r["released"], r["warning"]), (True, ""))
+        self.assertEqual(self.fake.calls[-1], ("disposition", "agent-token", "c-1", "777"))
+        self.assertEqual(r["loan"]["last_disposition"], "ptp_given")          # the CRM keeps the real outcome
+
+    def test_end_call_finds_the_call_even_when_smartflos_agent_filter_shows_nothing(self):
+        def live_calls(token, agent_number=None):
+            return {"data": []} if agent_number else {"data": [{"call_id": "c-9", "customer_number": "9111111111", "status": "answered"}]}
+        self.fake.live_calls = live_calls
+        r = self.post(self.a1, "call/hangup", {"loan_id": self.l1.pk})
+        self.assertEqual((r.status_code, self.fake.calls[-1]), (200, ("hangup", "agent-token", "c-9")))

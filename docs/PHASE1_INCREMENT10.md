@@ -67,3 +67,8 @@ What changed:
 
 ## Follow-up: send my customers again from scratch (2026-11-09)
 Smartflo remembers which leads it has dialled and waits (retry_after_minutes, 120) before retrying, so customers tried earlier in a test are not rung again: the agent's line rings but no customer is dialled. The Campaigns screen has a new button, "Send my customers again from scratch": it deletes this agent's leads of today from the Smartflo list (`DELETE /v1/broadcast/leads/<list>`, field_2 = account id), forgets today's pushes and sends them again. `POST /api/dialer/session/resend`, audited as `campaign_resent`. If Smartflo refuses the delete, the customers are still sent (the list overwrites duplicates) and a warning is shown.
+
+## Follow-up: release the agent without a mapped outcome, End call in the pop-up (2026-11-09)
+UAT: after the first call the CRM said "no Smartflo disposition is set for Connected · PTP given", so Smartflo was never told the call was finished and did not dial the second customer; also the customer window had no End call button.
+- When an outcome has no Smartflo id, the CRM now borrows a similar one (same group, then any "Connected" outcome for a connected call, then any mapped one), so the agent is released and the next customer is dialled. The CRM keeps the real outcome. If no outcome at all has an id, the old warning stays. The proper fix is still to map all 11 ids (Campaigns, Setup, Call outcomes in Smartflo: the Create button finds the list "CRM call outcomes" and saves every id).
+- End call: button in the customer window and in the "calling now" strip. The hang-up also finds the call through the account's live calls when Smartflo's agent filter shows nothing.
