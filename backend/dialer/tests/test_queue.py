@@ -155,3 +155,17 @@ class QueueTests(DialerBase):
         self.assertEqual(r["sent"], 1)
         self.assertIn("delete one lead: Smartflo refused the request (404)", r["warning"])
         self.assertIn("delete by Account ID", r["warning"])
+
+    def test_the_dial_rules_are_sent_to_campaigns_that_already_exist(self):
+        from dialer.setup import CAMPAIGN_DEFAULTS
+        self.assertIn("-1", CAMPAIGN_DEFAULTS["dial_status"])        # customers Smartflo tried once (Undisposed) are dialled again
+        self.fake.calls.clear()
+        r = self.api(self.admin).post("/api/dialer/smartflo/rules/dpd1_7", {}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((len(r.json()["updated"]), r.json()["failed"]), (1, []))
+        call = [c for c in self.fake.calls if c[0] == "update_campaign"][0]
+        self.assertEqual((call[1], call[2]["dial_status"], call[2]["number_of_retry"]), ("111", CAMPAIGN_DEFAULTS["dial_status"], "3"))
+        self.assertEqual(self.api(self.a1).post("/api/dialer/smartflo/rules/dpd1_7", {}, format="json").status_code, 403)
+        self.fake.fail = {"update_campaign": SmartfloError("Smartflo refused the request (422).")}
+        r = self.api(self.admin).post("/api/dialer/smartflo/rules/all", {}, format="json").json()
+        self.assertEqual((r["updated"], len(r["failed"])), ([], 1))

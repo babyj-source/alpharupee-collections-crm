@@ -137,6 +137,14 @@ function CampaignList({ admin }) {
       await load();
     } catch (e) { setError(e.message); await load(); } finally { setMaking(""); }
   };
+  const sendRules = async (key) => {
+    if (!window.confirm(key === "all" ? "Send the retry rules (how many tries, the wait, which customers are dialled again) to every connected campaign in Smartflo?" : "Send the retry rules to this campaign in Smartflo?")) return;
+    setError(""); setNotice(""); setMaking("rules");
+    try {
+      const r = await api(`/dialer/smartflo/rules/${key}`, { method: "POST" });
+      setNotice(`${r.updated.length ? `Updated in Smartflo: ${r.updated.join(", ")}.` : ""}${r.failed.length ? ` Not updated: ${r.failed.join("; ")}` : ""}`.trim());
+    } catch (e) { setError(e.message); } finally { setMaking(""); }
+  };
   const remove = (c) => window.confirm(`Delete “${c.label}”?`) && run(() => api(`/dialer/campaigns/${c.key}`, { method: "DELETE" }), `${c.label} deleted.`);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
 
@@ -188,6 +196,7 @@ function CampaignList({ admin }) {
                 <td>
                   <button className="ghost" onClick={() => toggle(c)}>{c.active ? "Pause" : "Switch on"}</button>{" "}
                   {admin && !c.configured && <><button disabled={!!making} onClick={() => makeInSmartflo(c)}>{making === c.key ? "Creating…" : "Create in Smartflo"}</button>{" "}</>}
+                  {admin && c.configured && <><button className="ghost" disabled={!!making} onClick={() => sendRules(c.key)}>Update dial rules</button>{" "}</>}
                   <button className="ghost" onClick={() => edit(c)}>Edit</button>
                   {c.custom && <>{" "}<button className="ghost" onClick={() => remove(c)}>Delete</button></>}
                 </td>

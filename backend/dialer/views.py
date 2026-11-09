@@ -210,6 +210,30 @@ class SmartfloOutcomesView(APIView):
         return Response(res)
 
 
+class SmartfloRulesView(APIView):
+    """Admin: send the CRM's retry rules (dial_status etc.) to a campaign that already exists in Smartflo. key "all" does every connected campaign."""
+
+    permission_classes = [IsAdmin]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    def post(self, request, key):
+        if not enabled():
+            return bad("Smartflo is switched off on this server, or no token is set.")
+        camps = Campaign.objects.exclude(smartflo_campaign_id="") if key == "all" else [get_object_or_404(Campaign, key=key)]
+        done, failed = [], []
+        for camp in camps:
+            try:
+                smartflo_setup.apply_dial_rules(camp, get_client())
+                done.append(camp.label)
+            except smartflo_setup.SetupError as exc:
+                failed.append(f"{camp.label}: {exc}")
+            except SmartfloError as exc:
+                failed.append(f"{camp.label}: {str(exc)[:200]}")
+        audit(request, "smartflo_rules_updated", user=request.user, detail=f"{len(done)} updated, {len(failed)} failed")
+        return Response({"updated": done, "failed": failed})
+
+
 class SmartfloCampaignView(APIView):
     """Admin: create the lead list and the dialler campaign in Smartflo for one CRM campaign and save their ids on it."""
 
@@ -452,16 +476,20 @@ class SessionPushView(APIView):
         return Response({"sent": sent, "total": total, "error": error})
 
 
+LEAD_LOOKUPS = 40   # the lead list is shared and paged, so each customer is looked up by phone number; this caps the calls per click
+
+
 def _lead_ids(client, list_id, rows):
     """Smartflo's own id (lead_id) for each of these leads, found by reading the list."""
     accts = {r["field_2"] for r in rows}
     nums = {last10(r["field_0"]) for r in rows}
     ids = []
-    for d in walk_dicts(client.list_leads(list_id)):
-        if str(d.get("field_2", "")).strip() in accts or last10(str(d.get("field_0", ""))) in nums:
-            lid = d.get("lead_id") or d.get("id")
-            if lid not in (None, "") and str(lid) not in ids:
-                ids.append(str(lid))
+    for r in rows[:LEAD_LOOKUPS]:
+        for d in walk_dicts(client.list_leads(list_id, number=r["field_0"])):
+            if str(d.get("field_2", "")).strip() in accts or last10(str(d.get("field_0", ""))) in nums:
+                lid = d.get("lead_id") or d.get("id")
+                if lid not in (None, "") and str(lid) not in ids:
+                    ids.append(str(lid))
     return ids
 
 
@@ -551,8 +579,11 @@ class SessionLeadsView(APIView):
         if not enabled():
             return bad("The dialler is switched off on this server.")
         queue = _queue(s, request.user)
+        client, reply = get_client(), []
         try:
-            reply = get_client().list_leads(s.campaign.smartflo_list_id)
+            for l in queue[:LEAD_LOOKUPS]:
+                if l.borrower_mobile:
+                    reply.append(client.list_leads(s.campaign.smartflo_list_id, number=last10(l.borrower_mobile)))
         except SmartfloError as exc:
             return bad(f"Smartflo would not show the list. {exc}", 502)
         by_acct = {l.account_id: l for l in queue}

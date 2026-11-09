@@ -10,6 +10,7 @@ urlpatterns = [
     path("setup", views.SetupView.as_view()),
     path("smartflo/users", views.SmartfloUsersView.as_view()),
     path("smartflo/outcomes", views.SmartfloOutcomesView.as_view()),
+    path("smartflo/rules/<str:key>", views.SmartfloRulesView.as_view()),
     path("smartflo/campaign/<str:key>", views.SmartfloCampaignView.as_view()),
     path("campaigns/<str:key>", views.CampaignUpdateView.as_view()),
     path("dispositions", views.DispositionMapView.as_view()),

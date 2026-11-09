@@ -184,9 +184,15 @@ class SmartfloClient:
                 params[k] = v
         return self._call("GET", "/v1/call/records", settings.SMARTFLO_API_TOKEN, bearer=True, params=params)
 
-    def list_leads(self, list_id):
-        """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked)."""
-        return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True)
+    def list_leads(self, list_id, number=None):
+        """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked).
+        `number` asks for one phone number only: the list is shared by every agent and comes back a page at a time."""
+        return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          params={"number": str(number)} if number else None)
+
+    def update_campaign(self, campaign_id, body):
+        """Change settings of a dialler campaign (every field optional; only the ones sent change)."""
+        return self._call("PUT", f"/v1/dialer/campaign/{campaign_id}", settings.SMARTFLO_API_TOKEN, bearer=True, json=body)
 
     def delete_lead(self, lead_id):
         """Remove one lead by its own id (the lead_id Smartflo shows when the list is read)."""
