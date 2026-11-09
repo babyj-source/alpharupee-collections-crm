@@ -16,6 +16,26 @@ from .smartflo import SmartfloError, find_id, walk_dicts
 
 LEAD_FIELDS = ["Phone Number", "Name", "Account ID"]   # field_0, field_1, field_2 as pushed by pools.lead_pairs
 OUTCOME_LIST = "CRM call outcomes"
+# Smartflo does not take symbols in names, so the outcomes are made there with plain words (letters and spaces) and a code of
+# letters only. The CRM keeps its own labels; the pairing is by the Smartflo id saved against each CRM outcome.
+SMARTFLO_OUTCOME_NAMES = {
+    "ptp_given": "Connected PTP given",
+    "paid_today": "Connected paid today",
+    "will_pay_no_date": "Connected will pay no date",
+    "refuses": "Connected refuses to pay",
+    "dispute": "Connected dispute or complaint",
+    "needs_senior": "Connected needs senior agent",
+    "reference_contacted": "Reference contacted",
+    "wrong_number": "Wrong number",
+    "not_reachable": "Not reachable or switched off",
+    "no_answer": "No answer",
+    "call_back_later": "Call back later",
+}
+
+
+def smartflo_outcome(code):
+    """(name, code) to create in Smartflo for a CRM outcome: plain words, and the code without underscores."""
+    return SMARTFLO_OUTCOME_NAMES[code], code.replace("_", "")
 
 # Settings the CRM chooses for a new campaign. They follow the example Smartflo's dialler team tested ("calls are connecting"):
 # ratio dialling 1:1, Dial Out (Session) so each agent has one session call for the shift, agent extension (softphone), callbacks only
@@ -103,25 +123,28 @@ def provision_outcomes(client):
     existing = client.list_disposition_lists()
     added, missing = 0, []
     for code, (label, _g, _s) in DISPOSITIONS.items():
-        if find_id(existing, name=label, code=code):
+        name, plain = smartflo_outcome(code)
+        if find_id(existing, name=name, code=plain) or find_id(existing, name=label, code=code):
             continue
-        client.add_disposition_status(list_id, label, code)
+        client.add_disposition_status(list_id, name, plain)
         added += 1
     after = client.list_disposition_lists() if added else existing
     mapped = 0
     for code, (label, _g, _s) in DISPOSITIONS.items():
+        name, plain = smartflo_outcome(code)
         sid = None
         for d in walk_dicts(after):    # an item that is one of OUR outcomes (by code or name), not the list itself
             if d.get("id") in (None, "") or str(d["id"]) == str(list_id):
                 continue
-            if str(d.get("code", "")).lower() == code or str(d.get("name", "")).strip().lower() == label.lower():
+            c, n = str(d.get("code", "")).lower(), str(d.get("name", "")).strip().lower()
+            if c in (code, plain) or n in (name.lower(), label.lower()):
                 sid = str(d["id"])
                 break
         if sid and sid.isdigit():
             DispositionMap.objects.update_or_create(crm_code=code, defaults={"smartflo_status_id": sid})
             mapped += 1
         else:
-            missing.append(label)
+            missing.append(name)
     steps.append(f"Added {added} outcome(s); saved Smartflo ids for {mapped} of {len(DISPOSITIONS)}.")
     if missing:
         steps.append("Smartflo did not show an id for: " + ", ".join(missing) + ". Enter those ids in the table below.")

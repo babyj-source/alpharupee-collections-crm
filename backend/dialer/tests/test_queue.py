@@ -6,6 +6,8 @@ from dialer.tests.test_dialer import DialerBase
 class QueueTests(DialerBase):
     def setUp(self):
         super().setUp()
+        from django.core.cache import cache
+        cache.clear()
         DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="555")
         self.start()
 
@@ -169,3 +171,32 @@ class QueueTests(DialerBase):
         self.fake.fail = {"update_campaign": SmartfloError("Smartflo refused the request (422).")}
         r = self.api(self.admin).post("/api/dialer/smartflo/rules/all", {}, format="json").json()
         self.assertEqual((r["updated"], len(r["failed"])), ([], 1))
+
+    def outcome_lists(self):
+        from dialer.setup import OUTCOME_LIST
+        from loans.workflow import DISPOSITIONS
+        items = [{"id": 100 + i, "name": label, "code": code} for i, (code, (label, _g, _s)) in enumerate(DISPOSITIONS.items())]
+        self.fake.list_disposition_lists = lambda: {"data": [{"id": 9, "name": OUTCOME_LIST, "statuses": items}]}
+
+    def test_when_no_outcome_has_a_smartflo_id_the_crm_makes_them_itself_and_releases_the_agent(self):
+        DispositionMap.objects.update(smartflo_status_id="")          # nobody ever ran the outcomes set-up
+        self.outcome_lists()
+        self.live("9111111111")
+        self.poll()
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
+        self.assertEqual((r["released"], r["warning"]), (True, ""))
+        self.assertEqual(self.fake.calls[-1][0], "disposition")
+        self.assertTrue(DispositionMap.objects.filter(crm_code="paid_today").exclude(smartflo_status_id="").exists())
+
+    def test_an_outcome_saved_earlier_is_passed_on_by_itself_once_an_id_exists(self):
+        DispositionMap.objects.update(smartflo_status_id="")
+        self.answered()
+        self.poll()
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
+        self.assertEqual(r["released"], False)                          # nothing could be mapped
+        self.assertTrue(self.poll()["awaiting_outcome"])
+        self.fake.live = {"data": []}
+        DispositionMap.objects.filter(crm_code="paid_today").update(smartflo_status_id="321")      # the Admin maps it later
+        self.fake.calls.clear()
+        d = self.poll()
+        self.assertEqual((d["awaiting_outcome"], ("disposition", "agent-token", "c-1", "321") in self.fake.calls), (False, True))
