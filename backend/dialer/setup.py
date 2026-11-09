@@ -144,7 +144,11 @@ def provision_campaign(camp, client):
     steps = []
     dlist = outcome_list_id()
     if not dlist:
-        raise SetupError("Create the call outcomes in Smartflo first (Setup, Call outcomes in Smartflo).")
+        # Smartflo wants an outcome list on every campaign and an outcome for every answered call. The agent still saves the outcome
+        # once, on the CRM customer page; the CRM passes it on. So the list is made here, without a separate step for the Admin.
+        out = provision_outcomes(client)
+        dlist = out["list_id"]
+        steps.extend(out["steps"])
     profiles = {p.smartflo_email.strip().lower(): p for p in DialerProfile.objects.exclude(smartflo_email="") if User.objects.filter(pk=p.user_id, is_active=True).exists()}
     agent_ids = sorted({int(d["id"]) for d in _smartflo_users(client) if str(d.get("login_id", "")).strip().lower() in profiles
                         and str(d.get("id", "")).isdigit()})

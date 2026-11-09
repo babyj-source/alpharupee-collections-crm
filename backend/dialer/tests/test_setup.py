@@ -90,10 +90,14 @@ class SetupFlowTests(DialerBase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual((len(self.fake.statuses), len(self.fake.dlists)), (n, 1))
 
-    def test_campaign_needs_the_outcomes_first(self):
+    def test_campaign_makes_the_outcomes_list_itself_when_it_is_missing(self):
         r = self.post(self.admin, "smartflo/campaign/dpd8_15")
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("outcomes", r.json()["detail"])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.fake.names().count("add_disposition_status"), len(DISPOSITIONS))
+        self.assertEqual(DispositionMap.objects.exclude(smartflo_status_id="").count(), len(DISPOSITIONS))
+        body = next(c[1] for c in self.fake.calls if c[0] == "create_campaign")
+        self.assertEqual(body["disposition_list"], str(self.fake.dlists[0]["id"]))
+        self.assertTrue(any("outcomes list" in x for x in r.json()["steps"]))
 
     def test_campaign_creates_list_and_campaign_and_saves_ids(self):
         self.post(self.admin, "smartflo/outcomes")

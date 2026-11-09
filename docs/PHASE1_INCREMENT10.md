@@ -34,3 +34,6 @@ sequence (agent sign-in, session, session call, outcome, logout, lead push); thi
 ## Server step
 Nothing is needed if `SMARTFLO_CALLER_ID` is the number shown in Smartflo's My Numbers. If "Create in Smartflo" says the number was not found, run
 `bash /opt/crm/current/server-tools/set-smartflo.sh did <id>` as `deploy` with the id from that message.
+
+## Follow-up: no separate "call outcomes" step
+"Create in Smartflo" on a campaign now makes the "CRM call outcomes" list (and saves each outcome's Smartflo id) by itself when it is missing. Agents still save the outcome once, on the CRM customer page; the CRM passes it to Smartflo, which needs an outcome list on every campaign and an outcome for each answered call to free the agent for the next customer. The "Create outcomes" button remains only for re-checking.
