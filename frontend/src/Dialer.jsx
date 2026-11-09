@@ -55,6 +55,15 @@ export default function Dialer() {
     try { setPush(await api("/dialer/session/push", { method: "POST" })); }
     catch (err) { setError(err.message); } finally { setBusy(false); }
   }
+  async function resend() {
+    if (!window.confirm("Clear your customers in Smartflo and send them again from scratch? Use this when Smartflo is not ringing customers it already tried today.")) return;
+    setError(""); setNotice(""); setBusy(true);
+    try {
+      const r = await api("/dialer/session/resend", { method: "POST" });
+      setPush(r);
+      setNotice(r.error ? "" : `${num(r.sent)} of your customers were sent to Smartflo again.${r.warning ? " " + r.warning : ""}`);
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
   async function stop() {
     setError("");
     try { await api("/dialer/session/stop", { method: "POST" }); setOpen(null); await refresh(); }
@@ -152,7 +161,11 @@ export default function Dialer() {
                 <div><strong>{num(s.stats.pending)}</strong><span className="muted small">Outcome owed</span></div>
               </div>
             )}
-            <div className="row"><button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button></div>
+            <div className="row">
+              <button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button>
+              <button className="ghost" disabled={busy} onClick={resend}>Send my customers again from scratch</button>
+            </div>
+            <p className="muted small">Smartflo does not ring a customer it has already tried today until its retry wait is over. If the agent line rings but no customer is dialled, use "from scratch".</p>
           </section>
 
           <section className={`card nowcall${s.call ? " live" : ""}`} aria-live="polite">

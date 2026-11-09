@@ -64,3 +64,6 @@ What changed:
 - A call that rings but is never answered needs no outcome: it is released automatically, shown as "Not answered", and the next customer shows as Calling.
 - Live calls are looked up by the agent's number first. If Smartflo returns nothing for that filter, the CRM looks at the account's live calls and keeps only those matching this agent's customers. The page shows a small line saying how many live calls were seen and how (by agent number, by customers' numbers, none), to diagnose if the pop-up still fails.
 - New table DialAttempt (migration 0005): one row per call in a session. No phone numbers are returned by the session endpoint.
+
+## Follow-up: send my customers again from scratch (2026-11-09)
+Smartflo remembers which leads it has dialled and waits (retry_after_minutes, 120) before retrying, so customers tried earlier in a test are not rung again: the agent's line rings but no customer is dialled. The Campaigns screen has a new button, "Send my customers again from scratch": it deletes this agent's leads of today from the Smartflo list (`DELETE /v1/broadcast/leads/<list>`, field_2 = account id), forgets today's pushes and sends them again. `POST /api/dialer/session/resend`, audited as `campaign_resent`. If Smartflo refuses the delete, the customers are still sent (the list overwrites duplicates) and a warning is shown.

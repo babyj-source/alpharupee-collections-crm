@@ -23,6 +23,7 @@ urlpatterns = [
     path("session/stop", views.SessionStopView.as_view()),
     path("session/dismiss", views.SessionDismissView.as_view()),
     path("session/release", views.SessionReleaseView.as_view()),
+    path("session/resend", views.SessionResendView.as_view()),
     path("session/outcome/<int:pk>", views.SessionOutcomeView.as_view()),
     path("call", views.CallView.as_view()),
     path("call/status", views.CallStatusView.as_view()),
