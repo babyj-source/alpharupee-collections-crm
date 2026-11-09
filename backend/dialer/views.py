@@ -25,7 +25,7 @@ from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITIO
 from .models import Campaign, CampaignPush, DialAttempt, DialerProfile, DialerSession, DispositionMap, PushedLead
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
 from . import setup as smartflo_setup
-from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls
+from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls, walk_dicts
 
 TOKEN_MINUTES = 55  # Smartflo agent tokens last one hour
 ACCESS_HOURS = 3
@@ -452,6 +452,21 @@ class SessionPushView(APIView):
         return Response({"sent": sent, "total": total, "error": error})
 
 
+def _clear_leads(client, list_id, rows):
+    """Remove these leads from the Smartflo list. Smartflo's guide does not say what `field` must hold, and field_0/field_2 are refused (422),
+    so the column names of the list are tried in turn, first one that Smartflo accepts wins. Returns a warning, "" when cleared."""
+    tries = [("Account ID", [r["field_2"] for r in rows]), ("Phone Number", [r["field_0"] for r in rows]),
+             ("account_id", [r["field_2"] for r in rows]), ("phone_number", [r["field_0"] for r in rows])]
+    last = ""
+    for field, values in tries:
+        try:
+            client.delete_leads(list_id, field, values)
+            return ""
+        except SmartfloError as exc:
+            last = str(exc)[:160]
+    return f"Smartflo would not clear the old entries ({last}). They were sent again anyway."
+
+
 class SessionResendView(APIView):
     """Start this agent's customers in Smartflo from scratch: remove the ones sent today from the Smartflo list, then send them again.
     Smartflo remembers which leads it has already dialled (and waits before retrying), so a customer tried earlier today would otherwise
@@ -468,18 +483,60 @@ class SessionResendView(APIView):
             return bad("The dialler is switched off on this server.")
         client, today = get_client(), timezone.localdate()
         mine = PushedLead.objects.filter(campaign=s.campaign, pushed_on=today, user=request.user)
-        accounts = list(Loan.objects.filter(pk__in=mine.values("loan_id")).values_list("account_id", flat=True))
-        warning = ""
-        if accounts:
-            try:
-                client.delete_leads(s.campaign.smartflo_list_id, "field_2", accounts)
-            except SmartfloError as exc:
-                warning = f"Smartflo would not clear the old entries ({str(exc)[:160]}). They were sent again anyway."
+        rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=mine.values("loan_id")))]
+        warning = _clear_leads(client, s.campaign.smartflo_list_id, rows) if rows else ""
         mine.delete()
         sent, total, error = push_for_agent(s.campaign, request.user, client)
         audit(request, "campaign_resent", user=request.user, object_type="campaign", object_id=s.campaign_id,
               detail=f"{s.campaign.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
         return Response({"sent": sent, "total": total, "error": error, "warning": warning})
+
+
+DIAL_STATUS = {1: "New", 2: "Message played", 3: "DTMF pressed", 4: "No answer", 5: "DND", 6: "Busy", 7: "Congestion", 8: "Failed", 9: "Account DND"}
+DIALER_STATUS = {0: "New (waiting to be dialled)", -1: "Undisposed", -2: "In account DND list", -3: "In public DND list", -4: "Emergency",
+                 -5: "Call dropped", -6: "Channel limit reached", -7: "In account block list"}
+
+
+def _num(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+class SessionLeadsView(APIView):
+    """What Smartflo itself says about this agent's customers in the campaign's list: dial status, tries. Customers by account id only."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def get(self, request):
+        s, _ = current_session(request.user)
+        if not s:
+            return bad("Start the campaign first.")
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        queue = _queue(s, request.user)
+        try:
+            reply = get_client().list_leads(s.campaign.smartflo_list_id)
+        except SmartfloError as exc:
+            return bad(f"Smartflo would not show the list. {exc}", 502)
+        by_acct = {l.account_id: l for l in queue}
+        by_num = {last10(l.borrower_mobile): l for l in queue if l.borrower_mobile}
+        seen, out = set(), []
+        for d in walk_dicts(reply):
+            acct, num = str(d.get("field_2", "")).strip(), last10(str(d.get("field_0", "")))
+            loan = by_acct.get(acct) or by_num.get(num)
+            if not loan or loan.pk in seen:
+                continue
+            seen.add(loan.pk)
+            ds, dd = _num(d.get("dial_status")), _num(d.get("dialer_dial_status"))
+            out.append({"account_id": loan.account_id, "borrower_name": loan.borrower_name,
+                        "dial_status": DIAL_STATUS.get(ds, str(d.get("dial_status", ""))),
+                        "dialer_status": DIALER_STATUS.get(dd, str(d.get("dialer_dial_status", ""))),
+                        "call_count": d.get("call_count"), "retry_count": d.get("retry_count"), "picked": d.get("lead_picked")})
+        missing = [l.account_id for l in queue if l.pk not in seen]
+        return Response({"leads": out, "missing": missing})
 
 
 class SessionStopView(APIView):
