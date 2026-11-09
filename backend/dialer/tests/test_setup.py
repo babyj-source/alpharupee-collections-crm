@@ -216,6 +216,14 @@ class ClientSetupTests(Base):
             SmartfloClient(self.Http(body={"success": False, "message": "Call not found"})).disposition("T", "u-1", 77)
 
     @ON
+    def test_a_session_that_already_exists_is_not_an_error(self):
+        said = "You are already logged in to this campaign. Initiate session call to start dialing."
+        r = SmartfloClient(self.Http(status=422, body={"success": False, "message": said})).session_create("T", "5", "C")
+        self.assertTrue(r["already_logged_in"])
+        with self.assertRaises(SmartfloError):                         # any other refusal still stops the start
+            SmartfloClient(self.Http(status=422, body={"message": "Campaign is not active."})).session_create("T", "5", "C")
+
+    @ON
     def test_campaign_refusal_in_a_200_is_an_error(self):
         with self.assertRaisesMessage(SmartfloError, "Invalid caller"):
             SmartfloClient(self.Http(body={"success": False, "message": "Invalid caller"})).create_campaign({"name": "C"})
