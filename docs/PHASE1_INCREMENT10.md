@@ -37,3 +37,6 @@ Nothing is needed if `SMARTFLO_CALLER_ID` is the number shown in Smartflo's My N
 
 ## Follow-up: no separate "call outcomes" step
 "Create in Smartflo" on a campaign now makes the "CRM call outcomes" list (and saves each outcome's Smartflo id) by itself when it is missing. Agents still save the outcome once, on the CRM customer page; the CRM passes it to Smartflo, which needs an outcome list on every campaign and an outcome for each answered call to free the agent for the next customer. The "Create outcomes" button remains only for re-checking.
+
+## Follow-up: "You are already logged in to this campaign" (422)
+When the agent still has a session in Smartflo from an earlier start (for example one the CRM had already closed on its side), the session-create call answers 422 with that message and tells you to go straight to the session call. The CRM now treats it as "session already there" and carries on to the session call. Any other refusal still stops the start and is shown to the agent.

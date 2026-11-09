@@ -148,8 +148,15 @@ class SmartfloClient:
 
     # ---- the agent's own token
     def session_create(self, token, campaign_id, name):
-        return self._call("POST", "/v1/dialer/session/create", token, bearer=True,
-                          json={"campaign_id": _id(campaign_id), "campaign_name": name})
+        """Smartflo answers 422 "You are already logged in to this campaign. Initiate session call to start dialing." when the agent
+        still has a session from before. That is fine: the next step (the session call) is what starts the dialling."""
+        try:
+            return self._call("POST", "/v1/dialer/session/create", token, bearer=True,
+                              json={"campaign_id": _id(campaign_id), "campaign_name": name})
+        except SmartfloError as exc:
+            if "already logged in" in str(exc).lower():
+                return {"success": True, "already_logged_in": True}
+            raise
 
     def session_call(self, token, campaign_id, start=True):
         """One session call per agent, for the whole shift (not one per customer). Smartflo answers "Agent is on a call." if one is running."""
