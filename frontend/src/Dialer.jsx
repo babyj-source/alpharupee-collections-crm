@@ -64,6 +64,11 @@ export default function Dialer() {
       setNotice(r.error ? "" : `${num(r.sent)} of your customers were sent to Smartflo again.${r.warning ? " " + r.warning : ""}`);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
+  async function endCall(loanId) {
+    setError("");
+    try { await api("/dialer/call/hangup", { method: "POST", body: { loan_id: loanId } }); refresh(); }
+    catch (err) { setError(err.message); }
+  }
   async function stop() {
     setError("");
     try { await api("/dialer/session/stop", { method: "POST" }); setOpen(null); await refresh(); }
@@ -180,6 +185,7 @@ export default function Dialer() {
                   <strong>{s.current.borrower_name || "—"}</strong>
                   <span className="muted small">{s.current.account_id} · {inr(s.current.overdue_amount)} · {s.current.dpd} DPD</span>
                   <span className="grow" />
+                  {s.call && <button className="danger" onClick={() => endCall(s.current.id)}>End call</button>}
                   <button className="ghost" onClick={() => setOpen(s.current)}>Open customer</button>
                 </div>
                 {s.candidates?.length > 1 && (
@@ -241,7 +247,8 @@ export default function Dialer() {
 
       {open && (
         <Account loan={open} onClose={() => setOpen(null)} onChanged={() => refresh()}
-                 outcomePath={s?.active ? (id) => `/dialer/session/outcome/${id}` : undefined} onDialer={afterOutcome} />
+                 outcomePath={s?.active ? (id) => `/dialer/session/outcome/${id}` : undefined} onDialer={afterOutcome}
+                 dialCall={s?.call && s?.current && s.current.id === open.id ? s.call : null} />
       )}
     </div>
   );

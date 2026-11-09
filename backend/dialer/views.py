@@ -673,9 +673,25 @@ class SessionDismissView(APIView):
         return Response({"ok": True})
 
 
+def _status_id(code):
+    """Smartflo's id for this outcome. If this outcome has none yet, borrow the id of a similar one (same group, then any 'Connected'
+    outcome for a connected one, then any) so the agent is still released and the next customer is dialled. The CRM keeps the real outcome."""
+    maps = {m.crm_code: m.smartflo_status_id for m in DispositionMap.objects.exclude(smartflo_status_id="")}
+    if maps.get(code):
+        return maps[code]
+    label, group, _st = DISPOSITIONS.get(code, ("", "", None))
+    for pick in (lambda c: DISPOSITIONS[c][1] == group,
+                 lambda c: label.startswith("Connected") and DISPOSITIONS[c][0].startswith("Connected"),
+                 lambda c: True):
+        for c, sid in maps.items():
+            if c in DISPOSITIONS and pick(c):
+                return sid
+    return None
+
+
 def _release(s, code):
     """Tell Smartflo the outcome of the last call. Returns (ok, warning)."""
-    sid = DispositionMap.objects.filter(crm_code=code).values_list("smartflo_status_id", flat=True).first()
+    sid = _status_id(code)
     if not sid:
         return False, f"Saved in the CRM, but no Smartflo disposition is set for “{DISPOSITION_LABELS.get(code, code)}”, so the dialler was not told."
     try:
@@ -824,7 +840,11 @@ def _live_call_for(request, loan):
     token = unseal(s.token_enc) if s else settings.SMARTFLO_API_TOKEN
     mine = {last10(loan.number_for(k)) for k in ("borrower", "alt", "ref1", "ref2")} - {""}
     calls, _ = parse_live_calls(get_client().live_calls(token, p.agent_number))
-    return token, next((c for c in calls if c["number"] in mine), None)
+    call = next((c for c in calls if c["number"] in mine), None)
+    if call is None and s:      # a dialled call may not carry the agent's number yet: look at the account's live calls for this agent's customers
+        calls = _live_for_agent(s, request.user, p, _queue(s, request.user))[0]
+        call = next((c for c in calls if c["number"] in mine), None)
+    return token, call
 
 
 class CallStatusView(APIView):
