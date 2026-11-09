@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import re
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 
@@ -166,11 +167,12 @@ class SetupView(APIView):
     def get(self, request):
         profiles = {p.user_id: p for p in DialerProfile.objects.all()}
         maps = {m.crm_code: m.smartflo_status_id for m in DispositionMap.objects.all()}
+        codes = {m.crm_code: m.smartflo_code for m in DispositionMap.objects.all()}
         agents = User.objects.filter(role=Role.AGENT, is_active=True).order_by("name")
         return Response({
             "status": {"enabled": bool(settings.SMARTFLO_ENABLED), "token_set": bool(settings.SMARTFLO_API_TOKEN),
                        "caller_id_set": bool(settings.SMARTFLO_CALLER_ID), "outcome_list_id": smartflo_setup.outcome_list_id()},
-            "dispositions": [{"code": k, "label": v[0], "smartflo_status_id": maps.get(k, "")} for k, v in DISPOSITIONS.items()],
+            "dispositions": [{"code": k, "label": v[0], "smartflo_status_id": maps.get(k, ""), "smartflo_code": codes.get(k, "")} for k, v in DISPOSITIONS.items()],
             "agents": [{"id": a.pk, "name": a.name, "email": a.email,
                         "smartflo_email": profiles[a.pk].smartflo_email if a.pk in profiles else "",
                         "agent_number": profiles[a.pk].agent_number if a.pk in profiles else ""} for a in agents],
@@ -310,8 +312,14 @@ class DispositionMapView(APIView):
         for code, sid in data.items():
             if code not in DISPOSITIONS or not str(sid or "").isdigit() and str(sid or "") != "":
                 return bad(f"Check the entry for “{DISPOSITION_LABELS.get(code, code)}”: Smartflo ids are numbers.")
+        codes = request.data.get("codes") or {}
+        if not isinstance(codes, dict) or any(c not in DISPOSITIONS or not re.fullmatch(r"[A-Za-z0-9]{0,5}", str(v or "")) for c, v in codes.items()):
+            return bad("Smartflo codes are letters and digits only, 5 characters at most.")
         for code, sid in data.items():
-            DispositionMap.objects.update_or_create(crm_code=code, defaults={"smartflo_status_id": str(sid or "")})
+            defaults = {"smartflo_status_id": str(sid or "")}
+            if code in codes:
+                defaults["smartflo_code"] = str(codes[code] or "")
+            DispositionMap.objects.update_or_create(crm_code=code, defaults=defaults)
         audit(request, "dialer_setup_changed", user=request.user, detail="disposition map")
         return Response({"ok": True})
 
@@ -813,8 +821,8 @@ class SessionDismissView(APIView):
 def _status_id(code):
     """Smartflo's id for this outcome. If this outcome has none yet, borrow the id of a similar one (same group, then any 'Connected'
     outcome for a connected one, then any) so the agent is still released and the next customer is dialled. The CRM keeps the real outcome."""
-    maps = {m.crm_code: m.smartflo_status_id for m in DispositionMap.objects.exclude(smartflo_status_id="")}
-    if maps.get(code):
+    maps = {m.crm_code: (m.smartflo_status_id or m.smartflo_code) for m in DispositionMap.objects.all() if m.smartflo_status_id or m.smartflo_code}
+    if maps.get(code):                  # its own id, or (when Smartflo gave no id) its own short code
         return maps[code]
     label, group, _st = DISPOSITIONS.get(code, ("", "", None))
     for pick in (lambda c: DISPOSITIONS[c][1] == group,

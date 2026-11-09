@@ -132,10 +132,15 @@ def provision_outcomes(client):
     added, missing = 0, []
     for code, (label, _g, _s) in DISPOSITIONS.items():
         name, plain = smartflo_outcome(code)
+        DispositionMap.objects.update_or_create(crm_code=code, defaults={"smartflo_code": plain})   # the codes are kept in the CRM too
         if find_id(existing, name=name, code=plain) or find_id(existing, name=label, code=code):
             continue
-        client.add_disposition_status(list_id, name, plain)
-        added += 1
+        try:
+            client.add_disposition_status(list_id, name, plain)
+            added += 1
+        except SmartfloError as exc:
+            if "already" not in str(exc).lower():      # "name/code already taken": it was made by hand in Smartflo, which is fine
+                raise
     after = client.list_disposition_lists() if added else existing
     mapped = 0
     for code, (label, _g, _s) in DISPOSITIONS.items():
@@ -155,7 +160,9 @@ def provision_outcomes(client):
             missing.append(name)
     steps.append(f"Added {added} outcome(s); saved Smartflo ids for {mapped} of {len(DISPOSITIONS)}.")
     if missing:
-        steps.append("Smartflo did not show an id for: " + ", ".join(missing) + ". Enter those ids in the table below.")
+        keys = sorted({k for d in list(walk_dicts(after))[:6] for k in d})
+        steps.append("Smartflo does not show the outcomes' ids in its list reply (it shows: " + ", ".join(keys) + "). The CRM keeps the short codes "
+                     "and will report each outcome to Smartflo by its code. If Smartflo refuses that, type the numeric ids in the table.")
     return {"list_id": list_id, "steps": steps, "mapped": mapped, "missing": missing}
 
 

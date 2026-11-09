@@ -296,18 +296,19 @@ function Setup() {
       <section className="card scroll">
         <h2 style={{ padding: "0 10px" }}>Call outcomes in Smartflo</h2>
         <table>
-          <thead><tr><th>CRM outcome</th><th>Smartflo disposition id</th></tr></thead>
+          <thead><tr><th>CRM outcome</th><th>Smartflo code</th><th>Smartflo disposition id (if Smartflo gives one)</th></tr></thead>
           <tbody>
             {d.dispositions.map((x, i) => (
               <tr key={x.code}>
                 <td>{x.label}</td>
+                <td><input maxLength={5} value={x.smartflo_code} onChange={(e) => edit("dispositions", x.code, i, "smartflo_code", e.target.value.replace(/[^A-Za-z0-9]/g, ""))} aria-label={`${x.label} Smartflo code`} /></td>
                 <td><input inputMode="numeric" value={x.smartflo_status_id} onChange={(e) => edit("dispositions", x.code, i, "smartflo_status_id", e.target.value.replace(/\D/g, ""))} aria-label={`${x.label} Smartflo id`} /></td>
               </tr>
             ))}
           </tbody>
         </table>
         <div className="row" style={{ padding: "8px 10px" }}>
-          <button onClick={() => save(() => api("/dialer/dispositions", { method: "PUT", body: { map: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_status_id])) } }), "Outcome ids saved.")}>Save outcome ids</button>
+          <button onClick={() => save(() => api("/dialer/dispositions", { method: "PUT", body: { map: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_status_id])), codes: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_code])) } }), "Outcome codes and ids saved.")}>Save outcome codes and ids</button>
           <button className="ghost" disabled={busy || !d.status.enabled} onClick={makeOutcomes}>{busy ? "Creating…" : d.status.outcome_list_id ? "Re-check outcomes in Smartflo" : "Create outcomes in Smartflo"}</button>
         </div>
         <p className="muted small" style={{ padding: "0 10px" }}>Agents save the outcome once, on the customer page in the CRM; the CRM passes it to Smartflo, which needs it to free the agent for the next customer. “Create in Smartflo” on a campaign makes this list (“CRM call outcomes”, {d.dispositions.length} outcomes) by itself when it is missing, so you do not need to do anything here. The button is only for re-checking the list.</p>

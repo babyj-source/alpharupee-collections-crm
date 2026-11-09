@@ -91,7 +91,7 @@ class QueueTests(DialerBase):
         self.assertEqual(self.post(self.a1, "session/resend").status_code, 400)
 
     def test_an_outcome_with_no_smartflo_id_borrows_a_similar_one_so_the_agent_is_released(self):
-        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="")
+        DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")
         DispositionMap.objects.filter(crm_code="will_pay_no_date").update(smartflo_status_id="777")   # same group as "PTP given"
         self.live("9111111111")
         self.poll()
@@ -179,7 +179,7 @@ class QueueTests(DialerBase):
         self.fake.list_disposition_lists = lambda: {"data": [{"id": 9, "name": OUTCOME_LIST, "statuses": items}]}
 
     def test_when_no_outcome_has_a_smartflo_id_the_crm_makes_them_itself_and_releases_the_agent(self):
-        DispositionMap.objects.update(smartflo_status_id="")          # nobody ever ran the outcomes set-up
+        DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")          # nobody ever ran the outcomes set-up
         self.outcome_lists()
         self.live("9111111111")
         self.poll()
@@ -189,7 +189,7 @@ class QueueTests(DialerBase):
         self.assertTrue(DispositionMap.objects.filter(crm_code="paid_today").exclude(smartflo_status_id="").exists())
 
     def test_an_outcome_saved_earlier_is_passed_on_by_itself_once_an_id_exists(self):
-        DispositionMap.objects.update(smartflo_status_id="")
+        DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")
         self.answered()
         self.poll()
         r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
@@ -200,3 +200,25 @@ class QueueTests(DialerBase):
         self.fake.calls.clear()
         d = self.poll()
         self.assertEqual((d["awaiting_outcome"], ("disposition", "agent-token", "c-1", "321") in self.fake.calls), (False, True))
+
+    def test_with_only_short_codes_saved_the_outcome_is_reported_to_smartflo_by_its_code(self):
+        self.answered()
+        self.poll()
+        DispositionMap.objects.update(smartflo_status_id="")            # codes stay (they are saved by the migration)
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
+        self.assertEqual((r["released"], self.fake.calls[-1]), (True, ("disposition", "agent-token", "c-1", "paid")))
+
+    def test_create_outcomes_accepts_ones_already_made_by_hand(self):
+        from dialer import setup as st
+        calls = []
+        self.fake.list_disposition_lists = lambda: {"data": [{"id": 9, "name": st.OUTCOME_LIST}]}      # statuses are not shown in the reply
+        self.fake.create_disposition_list = lambda *a: {}
+
+        def add(list_id, name, code):
+            calls.append(code)
+            raise SmartfloError("Smartflo refused the request (422). {'name': ['The name has already been taken.']}")
+        self.fake.add_disposition_status = add
+        res = st.provision_outcomes(self.fake)
+        self.assertEqual((len(calls), res["mapped"], len(res["missing"])), (11, 0, 11))
+        self.assertTrue(any("short codes" in x for x in res["steps"]))
+        self.assertEqual(DispositionMap.objects.get(crm_code="no_answer").smartflo_code, "noans")

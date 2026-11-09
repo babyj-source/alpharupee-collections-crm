@@ -470,6 +470,7 @@ class SessionTests(DialerBase):
         self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["awaiting_outcome"])
 
     def test_outcome_without_mapping_or_on_error_keeps_the_crm_record(self):
+        DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")
         self.start()
         self.live()
         self.api(self.a1).get("/api/dialer/session")
