@@ -452,19 +452,53 @@ class SessionPushView(APIView):
         return Response({"sent": sent, "total": total, "error": error})
 
 
+def _lead_ids(client, list_id, rows):
+    """Smartflo's own id (lead_id) for each of these leads, found by reading the list."""
+    accts = {r["field_2"] for r in rows}
+    nums = {last10(r["field_0"]) for r in rows}
+    ids = []
+    for d in walk_dicts(client.list_leads(list_id)):
+        if str(d.get("field_2", "")).strip() in accts or last10(str(d.get("field_0", ""))) in nums:
+            lid = d.get("lead_id") or d.get("id")
+            if lid not in (None, "") and str(lid) not in ids:
+                ids.append(str(lid))
+    return ids
+
+
 def _clear_leads(client, list_id, rows):
-    """Remove these leads from the Smartflo list. Smartflo's guide does not say what `field` must hold, and field_0/field_2 are refused (422),
-    so the column names of the list are tried in turn, first one that Smartflo accepts wins. Returns a warning, "" when cleared."""
-    tries = [("Account ID", [r["field_2"] for r in rows]), ("Phone Number", [r["field_0"] for r in rows]),
-             ("account_id", [r["field_2"] for r in rows]), ("phone_number", [r["field_0"] for r in rows])]
-    last = ""
-    for field, values in tries:
+    """Remove these leads from the Smartflo list so they are sent as new. Smartflo's guide does not say what the bulk delete's `field` must
+    hold (field_0 / field_2 are refused with 422), so, in order: the leads' own ids (bulk delete by lead_id, then one by one), then the list's
+    column names. First way Smartflo accepts wins. Returns a warning, "" when cleared; the warning lists what Smartflo said to each try."""
+    errors = []
+
+    def attempt(label, fn):
         try:
-            client.delete_leads(list_id, field, values)
-            return ""
+            fn()
+            return True
         except SmartfloError as exc:
-            last = str(exc)[:160]
-    return f"Smartflo would not clear the old entries ({last}). They were sent again anyway."
+            errors.append(f"{label}: {str(exc)[:90]}")
+            return False
+
+    try:
+        ids = _lead_ids(client, list_id, rows)
+    except SmartfloError as exc:
+        ids = []
+        errors.append(f"read list: {str(exc)[:90]}")
+    if ids:
+        for field in ("lead_id", "id"):
+            if attempt(f"delete by {field}", lambda f=field: client.delete_leads(list_id, f, ids)):
+                return ""
+        done = 0
+        for lid in ids:
+            if not attempt("delete one lead", lambda l=lid: client.delete_lead(l)):
+                break
+            done += 1
+        if done == len(ids):
+            return ""
+    for field, values in (("Account ID", [r["field_2"] for r in rows]), ("Phone Number", [r["field_0"] for r in rows])):
+        if attempt(f"delete by {field}", lambda f=field, v=values: client.delete_leads(list_id, f, v)):
+            return ""
+    return "Smartflo would not clear the old entries. They were sent again anyway. Smartflo said: " + "; ".join(errors)
 
 
 class SessionResendView(APIView):

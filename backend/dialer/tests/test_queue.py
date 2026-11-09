@@ -129,3 +129,29 @@ class QueueTests(DialerBase):
         self.assertNotIn("9111111111", str(d))
         self.fake.leads = {"data": []}
         self.assertEqual(self.api(self.a1).get("/api/dialer/session/leads").json()["missing"], ["L1"])
+
+    def test_clearing_uses_smartflos_own_lead_ids_when_they_can_be_read(self):
+        self.fake.leads = {"data": [{"lead_id": "abc123", "field_0": "9111111111", "field_2": "L1"}, {"lead_id": "zzz", "field_0": "9000000000", "field_2": "OTHER"}]}
+        seen = []
+
+        def delete_leads(list_id, field, values):
+            seen.append((field, list(values)))
+            if field == "lead_id":
+                raise SmartfloError("Smartflo refused the request (422). The selected field is invalid.")
+            return {}
+        self.fake.delete_leads = delete_leads
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual((r["sent"], r["warning"]), (1, ""))
+        self.assertEqual(seen, [("lead_id", ["abc123"]), ("id", ["abc123"])])           # only this agent's lead, never the other one's
+
+    def test_clearing_falls_back_to_one_lead_at_a_time_and_reports_what_smartflo_said(self):
+        self.fake.leads = {"data": [{"lead_id": "abc123", "field_0": "9111111111", "field_2": "L1"}]}
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (422). bad field")}
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual((r["warning"] == "", ("delete_lead", "abc123") in self.fake.calls), (True, True))       # the one-by-one delete worked
+        self.fake.calls.clear()
+        self.fake.fail["delete_lead"] = SmartfloError("Smartflo refused the request (404).")
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual(r["sent"], 1)
+        self.assertIn("delete one lead: Smartflo refused the request (404)", r["warning"])
+        self.assertIn("delete by Account ID", r["warning"])
