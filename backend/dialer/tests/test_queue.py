@@ -76,7 +76,7 @@ class QueueTests(DialerBase):
         r = self.post(self.a1, "session/resend")
         self.assertEqual((r.status_code, r.json()["sent"], r.json()["total"], r.json()["warning"]), (200, 1, 1, ""))
         self.assertEqual([c[0] for c in self.fake.calls if c[0] in ("delete_leads", "bulk_add_leads")], ["delete_leads", "bulk_add_leads"])
-        self.assertEqual([c for c in self.fake.calls if c[0] == "delete_leads"][0][2:], ("field_2", ["L1"]))
+        self.assertEqual([c for c in self.fake.calls if c[0] == "delete_leads"][0][2:], ("Account ID", ["L1"]))
         self.assertEqual(PushedLead.objects.count(), 1)
 
     def test_resend_still_sends_when_smartflo_cannot_clear(self):
@@ -104,3 +104,28 @@ class QueueTests(DialerBase):
         self.fake.live_calls = live_calls
         r = self.post(self.a1, "call/hangup", {"loan_id": self.l1.pk})
         self.assertEqual((r.status_code, self.fake.calls[-1]), (200, ("hangup", "agent-token", "c-9")))
+
+    def test_clearing_tries_the_list_column_names_until_smartflo_accepts_one(self):
+        seen = []
+
+        def delete_leads(list_id, field, values):
+            seen.append((field, list(values)))
+            if field == "Account ID":
+                raise SmartfloError("Smartflo refused the request (422). The selected field is invalid.")
+            return {}
+        self.fake.delete_leads = delete_leads
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual((r["sent"], r["warning"]), (1, ""))
+        self.assertEqual(seen, [("Account ID", ["L1"]), ("Phone Number", ["9111111111"])])
+
+    def test_smartflos_own_view_of_my_customers(self):
+        self.fake.leads = {"data": [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1", "dial_status": 4, "dialer_dial_status": -1,
+                                     "call_count": 2, "retry_count": 1, "lead_picked": 1},
+                                    {"field_0": "9999999999", "field_2": "SOMEONE-ELSE", "dial_status": 1}]}
+        d = self.api(self.a1).get("/api/dialer/session/leads").json()
+        self.assertEqual(d["missing"], [])
+        self.assertEqual(d["leads"], [{"account_id": "L1", "borrower_name": "Asha Rao", "dial_status": "No answer", "dialer_status": "Undisposed",
+                                       "call_count": 2, "retry_count": 1, "picked": 1}])
+        self.assertNotIn("9111111111", str(d))
+        self.fake.leads = {"data": []}
+        self.assertEqual(self.api(self.a1).get("/api/dialer/session/leads").json()["missing"], ["L1"])

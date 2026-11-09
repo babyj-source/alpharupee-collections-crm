@@ -184,6 +184,10 @@ class SmartfloClient:
                 params[k] = v
         return self._call("GET", "/v1/call/records", settings.SMARTFLO_API_TOKEN, bearer=True, params=params)
 
+    def list_leads(self, list_id):
+        """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked)."""
+        return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True)
+
     def delete_leads(self, list_id, field, values):
         """Remove leads from a lead list by the value of one column (for example field_0 = mobile)."""
         return self._call("DELETE", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,

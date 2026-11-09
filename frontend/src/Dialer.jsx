@@ -16,6 +16,7 @@ export default function Dialer() {
   const [busy, setBusy] = useState(false);
   const [push, setPush] = useState(null); // result of the last send to Smartflo: {sent, total, error}
   const [open, setOpen] = useState(null);
+  const [sf, setSf] = useState(null); // what Smartflo's own lead list says about this agent's customers
   const shown = useRef(null); // id of the account the drawer was last opened for, so a new call opens it once
 
   const refresh = useCallback(() => api("/dialer/session").then(setSession).catch((e) => setError(e.message)), []);
@@ -63,6 +64,11 @@ export default function Dialer() {
       setPush(r);
       setNotice(r.error ? "" : `${num(r.sent)} of your customers were sent to Smartflo again.${r.warning ? " " + r.warning : ""}`);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+  async function checkSmartflo() {
+    setError(""); setBusy(true);
+    try { setSf(await api("/dialer/session/leads")); }
+    catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function endCall(loanId) {
     setError("");
@@ -169,7 +175,21 @@ export default function Dialer() {
             <div className="row">
               <button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button>
               <button className="ghost" disabled={busy} onClick={resend}>Send my customers again from scratch</button>
+              <button className="ghost" disabled={busy} onClick={checkSmartflo}>Check what Smartflo sees</button>
             </div>
+            {sf && (
+              <div className="tablewrap">
+                <table className="queue">
+                  <thead><tr><th>Customer</th><th>Account</th><th>Smartflo status</th><th>Dialler status</th><th>Calls</th><th>Retries</th></tr></thead>
+                  <tbody>
+                    {sf.leads.map((l) => (
+                      <tr key={l.account_id}><td>{l.borrower_name || "—"}</td><td>{l.account_id}</td><td>{l.dial_status}</td><td>{l.dialer_status}</td><td>{l.call_count ?? "—"}</td><td>{l.retry_count ?? "—"}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                {sf.missing.length > 0 && <p className="error small">Not found in Smartflo's list: {sf.missing.join(", ")}. Use "Send my customers again from scratch".</p>}
+              </div>
+            )}
             <p className="muted small">Smartflo does not ring a customer it has already tried today until its retry wait is over. If the agent line rings but no customer is dialled, use "from scratch".</p>
           </section>
 
