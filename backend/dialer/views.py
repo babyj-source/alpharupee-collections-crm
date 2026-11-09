@@ -340,6 +340,22 @@ def current_session(user):
     return s, False
 
 
+REFRESH_WITHIN = timedelta(minutes=12)   # renew the agent's token when this little is left (it lasts an hour)
+
+
+def keep_fresh(s, client):
+    """Swap the agent's token for a new one shortly before it lapses, so a shift does not end (and the session call stay running)
+    after an hour. If Smartflo will not renew it, nothing changes and the session ends at the old expiry as before."""
+    if s.token_expires_at - timezone.now() > REFRESH_WITHIN:
+        return
+    try:
+        new = client.refresh(unseal(s.token_enc))
+    except SmartfloError:
+        return
+    s.token_enc, s.token_expires_at = seal(new), timezone.now() + timedelta(minutes=TOKEN_MINUTES)
+    s.save(update_fields=["token_enc", "token_expires_at"])
+
+
 class StatusView(APIView):
     """What the agent screen needs before starting: is the dialler on, is this agent mapped, is it calling hours."""
 
@@ -387,12 +403,23 @@ class SessionStartView(APIView):
             token = client.agent_login(p.smartflo_email, d["smartflo_password"])
         except SmartfloError as exc:
             audit(request, "dialer_login_failed", user=request.user, detail=str(exc)[:200])
+            if "too many login" in str(exc).lower():
+                return bad("Smartflo has paused sign-in for your login after several tries. Wait 5 minutes, then try again with the right password.", 429)
             if exc.status in (400, 401, 403, 422):
                 return bad("Smartflo did not accept that login id and password. " + str(exc).split(". ", 1)[-1][:120], 400)
             return bad(str(exc), 502)
         try:
             client.session_create(token, camp.smartflo_campaign_id, camp.label)
-            client.session_call(token, camp.smartflo_campaign_id, start=True)
+            try:
+                client.session_call(token, camp.smartflo_campaign_id, start=True)
+            except SmartfloError as exc:
+                # A session from an earlier sign-in (a token that lapsed without a logout) makes Smartflo answer "Agent is on a call."
+                # The CRM has no open session for this agent, so end the old one and start again, once.
+                if "on a call" not in str(exc).lower():
+                    raise
+                client.logout(token, camp.smartflo_campaign_id)
+                client.session_create(token, camp.smartflo_campaign_id, camp.label)
+                client.session_call(token, camp.smartflo_campaign_id, start=True)
         except SmartfloError as exc:
             return bad(f"Signed in, but Smartflo would not start the session. {exc}", 502)
         s = DialerSession.objects.create(user=request.user, campaign=camp, token_enc=seal(token),
@@ -463,6 +490,8 @@ class SessionView(APIView):
         if not s:
             return Response({"active": False, "expired": expired})
         p = _profile(request.user)
+        if enabled():
+            keep_fresh(s, get_client())
         out = {"active": True, "campaign": {"key": s.campaign.key, "label": s.campaign.label}, "expires_at": s.token_expires_at,
                "call": None, "candidates": [], "current": None, "awaiting_outcome": False, "warning": "", "unparsed_fields": []}
         calls, unparsed = [], []
@@ -631,9 +660,10 @@ class CallView(APIView):
         s, _ = current_session(request.user)
         token = unseal(s.token_enc) if s else settings.SMARTFLO_API_TOKEN
         try:
-            get_client().click_to_call(token, p.agent_number, number[2:])
+            get_client().click_to_call(token, p.agent_number, number[2:], in_session=bool(s))
         except SmartfloError as exc:
-            return bad(str(exc), 502)
+            hint = " Stop the campaign on your Dialer screen to place an ordinary call." if s else ""
+            return bad(str(exc) + hint, 502)
         label = {"borrower": "borrower", "alt": "borrower's second number", "ref1": "reference 1", "ref2": "reference 2"}[d["which"]]
         Activity.objects.create(loan=loan, user=request.user, kind=Activity.Kind.CALL, detail=f"Call placed to {label}")
         audit(request, "call_placed", user=request.user, object_type="loan", object_id=loan.pk, detail=d["which"])

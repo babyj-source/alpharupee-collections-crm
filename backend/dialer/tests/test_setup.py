@@ -36,6 +36,9 @@ class Account(FakeSmartflo):
         self.lead_lists.append({"id": self._id(), "name": name, "field_map": fields})
         return {"success": True, "message": "created"}
 
+    def list_my_numbers(self):
+        return [{"id": "546294", "name": "dialer", "alias": "0606000009", "did": "+911600322818", "destination": None}]
+
     def list_campaigns(self):
         return {"data": [dict(x) for x in self.campaigns]}
 
@@ -102,8 +105,11 @@ class SetupFlowTests(DialerBase):
         self.assertEqual(self.fake.lead_lists[0]["field_map"], ["Phone Number", "Name", "Account ID"])
         body = next(c[1] for c in self.fake.calls if c[0] == "create_campaign")
         self.assertEqual(body["agent"], [501, 502])            # only the CRM agents that have a Smartflo login id; "Other" is left out
-        self.assertEqual(body["outbound_caller_id"], ["1600322818"])
-        self.assertEqual(body["lead_list_map"], [{"list_id": camp.smartflo_list_id and int(camp.smartflo_list_id), "list_status": 1}])
+        self.assertEqual(body["outbound_caller_id"], ["546294"])          # the number's id in Smartflo, not the number itself
+        self.assertEqual(body["lead_list_map"], [{"list_id": camp.smartflo_list_id, "list_status": "1"}])
+        self.assertEqual((body["dial_method"], body["dial_in_type"], body["connect_agent_through"], body["queue_timeout"], body["ring_strategy"]),
+                         ("2", "3", "2", "10", "1"))                                # what Smartflo's team tested
+        self.assertEqual((body["hide_lead_details"], body["update_lead_details"], body["agent_only_callback"]), (True, True, True))
         self.assertEqual(body["disposition_list"], str(self.fake.dlists[0]["id"]))
         self.assertEqual((body["number_of_retry"], body["retry_after_minutes"], body["ring_timeout"]), ("3", "120", "30"))
         self.assertTrue(r.json()["campaign"]["configured"])
@@ -185,7 +191,8 @@ class ClientSetupTests(Base):
         c.list_lead_lists()
         self.assertTrue(h.sent["url"].endswith("/v1/broadcast/lists"))
         c.create_campaign({"name": "C"})
-        self.assertEqual((h.sent["url"].endswith("/v1/dialer/campaign"), h.sent["json"]), (True, {"name": "C"}))
+        self.assertEqual((h.sent["url"], h.sent["json"], h.sent["headers"]["Authorization"]),
+                         ("https://cloudphone.tatateleservices.com/api/v1/outbound-dialer/add-dialer-campaign", {"name": "C"}, "acct-token"))
         c.create_disposition_list("D", "x")
         self.assertEqual((h.sent["url"].endswith("/v1/dialer/disposition_list"), h.sent["json"]), (True, {"name": "D", "description": "x", "status": True}))
         c.add_disposition_status(12, "PTP", "ptp_given")
@@ -196,28 +203,62 @@ class ClientSetupTests(Base):
         self.assertEqual((h.sent["url"].endswith("/v1/users"), h.sent["params"]), (True, {"limit": 200}))
 
     @ON
-    def test_outcome_is_saved_at_the_documented_store_disposition_address(self):
+    def test_outcome_is_saved_at_the_address_smartflo_gave(self):
         h = self.Http(body={"success": True})
         SmartfloClient(h).disposition("T", "u-1", 77)
-        self.assertTrue(h.sent["url"].endswith("/v1/dialer/store-disposition"))
+        self.assertTrue(h.sent["url"].endswith("/v1/dialer/disposition_details_update"))
         self.assertEqual(h.sent["json"], {"disposition_status": "77", "unique_id": "u-1"})
+        with self.assertRaisesMessage(SmartfloError, "Call not found"):
+            SmartfloClient(self.Http(body={"success": False, "message": "Call not found"})).disposition("T", "u-1", 77)
 
     @ON
-    def test_outcome_falls_back_to_the_old_address_on_404_once(self):
-        urls = []
+    def test_campaign_refusal_in_a_200_is_an_error(self):
+        with self.assertRaisesMessage(SmartfloError, "Invalid caller"):
+            SmartfloClient(self.Http(body={"success": False, "message": "Invalid caller"})).create_campaign({"name": "C"})
 
-        class Http:
-            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
-                urls.append(url)
+    @ON
+    def test_session_call_logout_and_refresh_follow_the_dialler_guide(self):
+        with self.assertRaisesMessage(SmartfloError, "Agent is on a call."):
+            SmartfloClient(self.Http(body={"success": False, "message": "Agent is on a call."})).session_call("T", "5")
+        c = SmartfloClient(self.Http(body={"success": False, "message": "Agent is not logged in."}))
+        self.assertEqual(c.logout("T", "5"), {"success": False, "message": "Agent is not logged in."})     # already out: fine
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(self.Http(body={"success": False, "message": "Something else"})).logout("T", "5")
+        h = self.Http(body={"success": True, "access_token": "T2", "expires_in": 3600})
+        self.assertEqual(SmartfloClient(h).refresh("T1"), "T2")
+        self.assertEqual((h.sent["method"], h.sent["url"].endswith("/v1/auth/refresh"), h.sent["headers"]["Authorization"]), ("POST", True, "T1"))
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(self.Http(body={"success": False, "message": "Invalid token provided"})).refresh("T1")
 
-                class R:
-                    status_code = 404 if url.endswith("store-disposition") else 200
+    @ON
+    def test_manual_dial_inside_a_session_uses_the_dialer_type_and_no_caller_id(self):
+        h = self.Http(body={"success": True})
+        with override_settings(SMARTFLO_CALLER_ID="1600322818"):
+            SmartfloClient(h).click_to_call("T", "0606", "9876543210", in_session=True)
+        self.assertEqual(h.sent["json"], {"agent_number": "0606", "destination_number": "9876543210", "async": 1, "type": "dialer"})
 
-                    def json(self):
-                        return {}
-                return R()
-        SmartfloClient(Http()).disposition("T", "u-1", 77)
-        self.assertEqual([u.rsplit("/", 1)[-1] for u in urls], ["store-disposition", "disposition_details_update"])
+    @ON
+    @override_settings(SMARTFLO_CALLER_ID="1600322818")
+    def test_the_outgoing_number_id_is_found_from_the_number_list(self):
+        from dialer.setup import SetupError, caller_did_id
+
+        class C:
+            def __init__(self, items):
+                self.items = items
+
+            def list_my_numbers(self):
+                return self.items
+        mine = [{"id": "11", "did": "+911234567890", "alias": "1"}, {"id": "546294", "did": "+911600322818", "alias": "2"}]
+        self.assertEqual(caller_did_id(C(mine)), "546294")
+        with self.assertRaises(SetupError) as cm:
+            caller_did_id(C([{"id": "11", "did": "+911234567890"}]))
+        self.assertIn("+911234567890 (id 11)", str(cm.exception))
+        self.assertIn("set-smartflo.sh did", str(cm.exception))
+        with override_settings(SMARTFLO_CALLER_DID_ID="1000631"):
+            self.assertEqual(caller_did_id(C([])), "1000631")             # the Admin's own id wins, no lookup
+        with override_settings(SMARTFLO_CALLER_ID=""):
+            with self.assertRaises(SetupError):
+                caller_did_id(C(mine))
 
     def test_find_id_reads_any_wrapping(self):
         self.assertEqual(find_id({"data": {"items": [{"id": 5, "name": "Alpha"}, {"id": 6, "name": "beta"}]}}, name="BETA"), "6")

@@ -35,20 +35,17 @@ def _id(v):
     return int(v) if str(v).isdigit() else v
 
 
-LEGACY_DISPOSITION_PATH = "/v1/dialer/disposition_details_update"
-
-
 class SmartfloClient:
     def __init__(self, http=None):
         self.http = http or requests
 
     _prefer = {}  # remembered header form per endpoint, so a fallback is only needed once
 
-    def _send(self, method, path, token, bearer, json, params):
+    def _send(self, method, path, token, bearer, json, params, base=None):
         headers = {"accept": "application/json", "content-type": "application/json",
                    "Authorization": f"Bearer {token}" if bearer else token}
         try:
-            r = self.http.request(method, settings.SMARTFLO_API_BASE.rstrip("/") + path, headers=headers, json=json,
+            r = self.http.request(method, (base or settings.SMARTFLO_API_BASE).rstrip("/") + path, headers=headers, json=json,
                                   params=params, timeout=settings.SMARTFLO_TIMEOUT_SECONDS)
         except requests.RequestException:
             raise SmartfloError("Could not reach Smartflo.")
@@ -59,7 +56,7 @@ class SmartfloClient:
         except ValueError:
             return {}
 
-    def _call(self, method, path, token, *, bearer=False, json=None, params=None):
+    def _call(self, method, path, token, *, bearer=False, json=None, params=None, base=None):
         """The vendor's examples send the token plain on some endpoints and as 'Bearer <token>' on others, and the document
         does not cover every endpoint. If Smartflo rejects the TOKEN (not a wrong password), try the other form once and
         remember which one worked."""
@@ -67,15 +64,15 @@ class SmartfloClient:
             raise SmartfloDisabled("The dialler is switched off on this server.")
         if not token:
             raise SmartfloError("No Smartflo token is set.")
-        key = (method, re.sub(r"\d+", "#", path))
+        key = (base or "", method, re.sub(r"\d+", "#", path))
         first = self._prefer.get(key, bearer)
         try:
-            data = self._send(method, path, token, first, json, params)
+            data = self._send(method, path, token, first, json, params, base)
         except SmartfloError as exc:
             if exc.status != 401 or "token" not in str(exc).lower():
                 raise
             try:
-                data = self._send(method, path, token, not first, json, params)
+                data = self._send(method, path, token, not first, json, params, base)
             except SmartfloError:
                 raise SmartfloError(str(exc) + " Tried the token with and without “Bearer”; check it is the right token and still valid.",
                                     status=401)
@@ -112,7 +109,15 @@ class SmartfloClient:
         return self._call("GET", "/v1/dialer/campaign", settings.SMARTFLO_API_TOKEN, bearer=True)
 
     def create_campaign(self, body):
-        return self._call("POST", "/v1/dialer/campaign", settings.SMARTFLO_API_TOKEN, bearer=True, json=body)
+        """Smartflo's tested route for a dialler campaign (their e-mail): cloudphone host, account token sent plain. It answers
+        only success and a message; the CRM reads the campaign list back to find the new id."""
+        data = self._call("POST", "/v1/outbound-dialer/add-dialer-campaign", settings.SMARTFLO_API_TOKEN, json=body, base=settings.SMARTFLO_CLOUDPHONE_BASE)
+        _refusal(data, "Smartflo did not create the campaign.")
+        return data
+
+    def list_my_numbers(self):
+        """Outgoing numbers on the account with their ids; a campaign's outbound_caller_id is the id."""
+        return self._call("GET", "/v1/my_number", settings.SMARTFLO_API_TOKEN)
 
     def list_disposition_lists(self):
         return self._call("GET", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True)
@@ -147,30 +152,53 @@ class SmartfloClient:
                           json={"campaign_id": _id(campaign_id), "campaign_name": name})
 
     def session_call(self, token, campaign_id, start=True):
-        return self._call("POST", "/v1/dialer/session_call", token, bearer=True,
+        """One session call per agent, for the whole shift (not one per customer). Smartflo answers "Agent is on a call." if one is running."""
+        data = self._call("POST", "/v1/dialer/session_call", token, bearer=True,
                           json={"startOrEnd": bool(start), "campaignId": str(campaign_id), "logout": False})
+        _refusal(data, "Smartflo did not start the session call.")
+        return data
 
     def logout(self, token, campaign_id):
-        return self._call("POST", "/v1/dialer/logout", token, bearer=True, json={"campaign_id": str(campaign_id)})
+        """Log the agent out of the campaign. "Agent is not logged in." (already out) is not an error."""
+        try:
+            data = self._call("POST", "/v1/dialer/logout", token, bearer=True, json={"campaign_id": str(campaign_id)})
+        except SmartfloError as exc:
+            if "not logged in" in str(exc).lower():
+                return {}
+            raise
+        d = data if isinstance(data, dict) else {}
+        if d.get("success") is False and "not logged in" not in str(d.get("message", "")).lower():
+            raise SmartfloError("Smartflo did not log the agent out. " + str(d.get("message") or "")[:120])
+        return data
+
+    def refresh(self, token):
+        """A fresh 60-minute token for the same agent, so a long shift does not need the password again. Returns the new token."""
+        data = self._call("POST", "/v1/auth/refresh", token)
+        new = data.get("access_token") if isinstance(data, dict) else None
+        if not new:
+            raise SmartfloError("Smartflo did not give a new token.")
+        return new
 
     def disposition(self, token, unique_id, status_id):
-        body = {"disposition_status": str(status_id), "unique_id": str(unique_id)}
-        try:
-            return self._call("POST", settings.SMARTFLO_DISPOSITION_PATH, token, json=body)
-        except SmartfloError as exc:
-            if exc.status != 404 or settings.SMARTFLO_DISPOSITION_PATH == LEGACY_DISPOSITION_PATH:
-                raise
-            return self._call("POST", LEGACY_DISPOSITION_PATH, token, json=body)
+        """Tell the dialler the outcome of the call just ended, which frees the agent for the next customer."""
+        data = self._call("POST", settings.SMARTFLO_DISPOSITION_PATH, token,
+                          json={"disposition_status": str(status_id), "unique_id": str(unique_id)})
+        _refusal(data, "Smartflo did not take the outcome.")
+        return data
 
     def live_calls(self, token, agent_number):
         return self._call("GET", "/v1/live_calls", token, params={"agent_number": agent_number})
 
-    def click_to_call(self, token, agent_number, destination):
+    def click_to_call(self, token, agent_number, destination, in_session=False):
+        """in_session: the agent has a running dialler session, so this is Smartflo's 'manual dial from the dialler panel'
+        (type "dialer", no caller id: the campaign decides). Outside a session type "dialer" is refused, so it is left out."""
         body = {"agent_number": agent_number, "destination_number": destination, "async": 1}
-        if settings.SMARTFLO_CALLER_ID:
+        if in_session:
+            body["type"] = "dialer"
+        elif settings.SMARTFLO_CALLER_ID:
             body["caller_id"] = settings.SMARTFLO_CALLER_ID          # the account's outgoing number, as in Smartflo's own example
             body["call_timeout"] = settings.SMARTFLO_CALL_TIMEOUT
-        if settings.SMARTFLO_CLICK_TO_CALL_TYPE:
+        if settings.SMARTFLO_CLICK_TO_CALL_TYPE and not in_session:
             body["type"] = settings.SMARTFLO_CLICK_TO_CALL_TYPE
         data = self._call("POST", "/v1/click_to_call", token, json=body)
         # Smartflo can answer HTTP 200 and still say it did not place the call. Log only the verdict fields (never numbers).
@@ -194,6 +222,14 @@ class SmartfloClient:
         if d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure"):
             raise SmartfloError("Smartflo did not end the call. " + re.sub(r"\s+", " ", str(d.get("message") or d.get("error") or ""))[:160])
         return data
+
+
+def _refusal(data, prefix):
+    """Smartflo can answer HTTP 200 with success false and a message ("Agent is on a call."). Turn that into an error."""
+    d = data if isinstance(data, dict) else {}
+    if d.get("success") is False or str(d.get("status", "")).strip().lower() in ("false", "failed", "error", "failure"):
+        reason = re.sub(r"\s+", " ", str(d.get("message") or d.get("error") or ""))[:160]
+        raise SmartfloError(f"{prefix} {reason}".strip())
 
 
 _ID_KEYS = ("call_id", "unique_id", "uuid", "callid", "id")
