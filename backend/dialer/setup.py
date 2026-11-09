@@ -16,7 +16,7 @@ from .smartflo import SmartfloError, find_id, walk_dicts
 
 LEAD_FIELDS = ["Phone Number", "Name", "Account ID"]   # field_0, field_1, field_2 as pushed by pools.lead_pairs
 OUTCOME_LIST = "CRM call outcomes"
-# Smartflo does not take symbols in names, so the outcomes are made there with plain words (letters and spaces) and a code of
+# Smartflo does not take symbols in names, so the outcomes are made there with plain words (letters and spaces) and a short code of
 # letters only. The CRM keeps its own labels; the pairing is by the Smartflo id saved against each CRM outcome.
 SMARTFLO_OUTCOME_NAMES = {
     "ptp_given": "Connected PTP given",
@@ -33,9 +33,17 @@ SMARTFLO_OUTCOME_NAMES = {
 }
 
 
+# Smartflo allows at most 5 characters in a code, letters only.
+SMARTFLO_OUTCOME_CODES = {
+    "ptp_given": "ptp", "paid_today": "paid", "will_pay_no_date": "willp", "refuses": "refus", "dispute": "dispt",
+    "needs_senior": "senr", "reference_contacted": "refct", "wrong_number": "wrong", "not_reachable": "unrch",
+    "no_answer": "noans", "call_back_later": "cback",
+}
+
+
 def smartflo_outcome(code):
-    """(name, code) to create in Smartflo for a CRM outcome: plain words, and the code without underscores."""
-    return SMARTFLO_OUTCOME_NAMES[code], code.replace("_", "")
+    """(name, code) to create in Smartflo for a CRM outcome: plain words, and a short letters-only code (5 characters at most)."""
+    return SMARTFLO_OUTCOME_NAMES[code], SMARTFLO_OUTCOME_CODES[code]
 
 # Settings the CRM chooses for a new campaign. They follow the example Smartflo's dialler team tested ("calls are connecting"):
 # ratio dialling 1:1, Dial Out (Session) so each agent has one session call for the shift, agent extension (softphone), callbacks only
