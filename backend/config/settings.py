@@ -138,7 +138,11 @@ SMARTFLO_CALL_TIMEOUT = int(env("SMARTFLO_CALL_TIMEOUT", "300"))
 SMARTFLO_HANGUP_PATH = env("SMARTFLO_HANGUP_PATH", "/v1/call/hangup")
 # Saves a call outcome (the "Disposition Detail Update" page of Smartflo's API reference shows this URL). The CRM used the older
 # /v1/dialer/disposition_details_update from the vendor's Postman collection; if Smartflo answers 404 the old path is tried once.
-SMARTFLO_DISPOSITION_PATH = env("SMARTFLO_DISPOSITION_PATH", "/v1/dialer/store-disposition")
+SMARTFLO_DISPOSITION_PATH = env("SMARTFLO_DISPOSITION_PATH", "/v1/dialer/disposition_details_update")  # as given by Smartflo's dialler team
+# The dialler campaign is created on Smartflo's cloudphone host (their tested example), not on the API host.
+SMARTFLO_CLOUDPHONE_BASE = env("SMARTFLO_CLOUDPHONE_BASE", "https://cloudphone.tatateleservices.com/api")
+# The id (not the number) of the outgoing number in Smartflo's "my numbers" list. Normally found automatically from SMARTFLO_CALLER_ID.
+SMARTFLO_CALLER_DID_ID = env("SMARTFLO_CALLER_DID_ID", "")
 
 # ---- MSG91
 MSG91_AUTHKEY = env("MSG91_AUTHKEY", "")

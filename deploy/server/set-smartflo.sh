@@ -4,6 +4,7 @@
 #   bash /opt/crm/current/server-tools/set-smartflo.sh on     # ask for the token, switch the dialler on
 #   bash /opt/crm/current/server-tools/set-smartflo.sh off    # switch the dialler off (token kept)
 #   bash /opt/crm/current/server-tools/set-smartflo.sh caller 1600322818   # the outgoing number customers see (caller_id)
+#   bash /opt/crm/current/server-tools/set-smartflo.sh did 1000631         # only if the CRM cannot find that number's id in Smartflo itself
 set -euo pipefail
 ENV_FILE="${ENV_FILE:-/opt/crm/shared/.env}"
 MODE="${1:?usage: set-smartflo.sh on|off}"
@@ -30,7 +31,11 @@ case "$MODE" in
     NUM="${2:?usage: set-smartflo.sh caller <outgoing number, digits only>}"
     case "$NUM" in ''|*[!0-9]*) echo "Digits only, for example 1600322818." >&2; exit 1;; esac
     setkey SMARTFLO_CALLER_ID "$NUM" ;;
-  *) echo "usage: set-smartflo.sh on|off|caller <number>" >&2; exit 1 ;;
+  did)
+    ID="${2:?usage: set-smartflo.sh did <number id from the My Numbers list in Smartflo>}"
+    case "$ID" in ''|*[!0-9]*) echo "Digits only, for example 1000631." >&2; exit 1;; esac
+    setkey SMARTFLO_CALLER_DID_ID "$ID" ;;
+  *) echo "usage: set-smartflo.sh on|off|caller <number>|did <id>" >&2; exit 1 ;;
 esac
 chmod 600 "$ENV_FILE"
 if [ -z "${SKIP_RESTART:-}" ]; then sudo systemctl restart crm; fi

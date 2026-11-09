@@ -15,17 +15,19 @@ from .smartflo import SmartfloError, find_id, walk_dicts
 LEAD_FIELDS = ["Phone Number", "Name", "Account ID"]   # field_0, field_1, field_2 as pushed by pools.lead_pairs
 OUTCOME_LIST = "CRM call outcomes"
 
-# Settings the CRM chooses for a new campaign. They follow the agreed defaults (3 attempts, 2 hours apart, 30 second ring) and
-# one call per agent at a time. Nothing here is secret; review them in the Smartflo portal after the first campaign is made.
+# Settings the CRM chooses for a new campaign. They follow the example Smartflo's dialler team tested ("calls are connecting"):
+# ratio dialling 1:1, Dial Out (Session) so each agent has one session call for the shift, agent extension (softphone), callbacks only
+# to the same agent. The business rules are ours: up to 3 attempts, 2 hours apart, a 60-second wrap-up after each call, and the
+# not-reached and busy customers are dialled again. Review them in Smartflo after the first campaign is made.
 CAMPAIGN_DEFAULTS = {
-    "dial_method": "2", "dial_ratio": "1",              # Ratio 1:1 = one customer per free agent (progressive)
-    "dial_in_type": "3",                                # Dial Out (Session): the agent's session call, as the CRM starts it
-    "connect_agent_through": "1",                       # agent mobile
-    "list_traversal_order": "1",                        # oldest lead first
+    "dial_method": "2", "dial_ratio": "1",
+    "dial_in_type": "3",
+    "connect_agent_through": "2",
+    "list_traversal_order": "1",                        # oldest lead first; the CRM pushes the highest days-past-due first
     "number_of_retry": "3", "retry_after_minutes": "120",
-    "auto_disposition_cancel_duration": "60", "ring_timeout": "30",
+    "auto_disposition_cancel_duration": "60", "ring_timeout": "30", "queue_timeout": "10", "ring_strategy": "1",
     "dial_status": ["0", "3", "9"],                     # new, not reachable, busy
-    "hide_lead_details": 0, "update_lead_details": 0, "enable_web_form": 0, "agent_only_callback": 0,
+    "hide_lead_details": True, "update_lead_details": True, "agent_only_callback": True, "enable_web_form": 0,
 }
 
 
@@ -104,14 +106,31 @@ def provision_outcomes(client):
     return {"list_id": list_id, "steps": steps, "mapped": mapped, "missing": missing}
 
 
-def campaign_body(camp, list_id, disposition_list_id, agent_ids):
+def caller_did_id(client):
+    """The id Smartflo uses for the outgoing number (campaigns take the id, not the number). SMARTFLO_CALLER_DID_ID wins if set;
+    otherwise the account's number list is searched for SMARTFLO_CALLER_ID."""
+    if settings.SMARTFLO_CALLER_DID_ID:
+        return str(settings.SMARTFLO_CALLER_DID_ID)
     if not settings.SMARTFLO_CALLER_ID:
         raise SetupError("The outgoing number is not set on the server (SMARTFLO_CALLER_ID). Ask IT to run set-smartflo.sh caller <number>.")
+    want = "".join(c for c in settings.SMARTFLO_CALLER_ID if c.isdigit())
+    items = [d for d in walk_dicts(client.list_my_numbers()) if d.get("id") not in (None, "") and ("did" in d or "alias" in d)]
+    for d in items:
+        for field in ("did", "alias", "name"):
+            have = "".join(c for c in str(d.get(field) or "") if c.isdigit())
+            if have and (have == want or have.endswith(want) or want.endswith(have) and len(have) >= 8):
+                return str(d["id"])
+    shown = ", ".join(f"{d.get('did') or d.get('alias') or d.get('name')} (id {d['id']})" for d in items[:8]) or "none returned"
+    raise SetupError(f"The outgoing number {settings.SMARTFLO_CALLER_ID} was not found in Smartflo's number list. Numbers on the account: {shown}. "
+                     "If one of these is the right one, ask IT to run set-smartflo.sh did <id>.")
+
+
+def campaign_body(camp, list_id, disposition_list_id, agent_ids, did_id):
     body = dict(CAMPAIGN_DEFAULTS)
     body.update({
         "name": f"CRM {camp.label}"[:60], "description": f"Collections CRM campaign: {camp.label}",
-        "outbound_caller_id": [settings.SMARTFLO_CALLER_ID],
-        "lead_list_map": [{"list_id": int(list_id), "list_status": 1}],
+        "outbound_caller_id": [str(did_id)],
+        "lead_list_map": [{"list_id": str(list_id), "list_status": "1"}],
         "disposition_list": str(disposition_list_id),
         "agent": agent_ids,
     })
@@ -150,7 +169,7 @@ def provision_campaign(camp, client):
     if cid:
         steps.append("A Smartflo campaign with this name already exists; using it.")
     else:
-        client.create_campaign(campaign_body(camp, list_id, dlist, agent_ids))
+        client.create_campaign(campaign_body(camp, list_id, dlist, agent_ids, caller_did_id(client)))
         cid = find_id(client.list_campaigns(), name=name)
         if not cid:
             raise SetupError("Smartflo created the campaign but did not say which id it has. The lead list id was saved; "

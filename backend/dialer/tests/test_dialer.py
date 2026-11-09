@@ -17,7 +17,7 @@ ON = override_settings(SMARTFLO_ENABLED=True, SMARTFLO_API_TOKEN="acct-token")
 
 class FakeSmartflo:
     def __init__(self):
-        self.calls, self.live, self.fail = [], {"data": []}, {}
+        self.calls, self.live, self.fail, self.in_session = [], {"data": []}, {}, False
 
     def _do(self, name, *args):
         self.calls.append((name, *args))
@@ -52,8 +52,13 @@ class FakeSmartflo:
         self._do("live_calls", agent_number)
         return self.live
 
-    def click_to_call(self, token, agent_number, destination):
+    def click_to_call(self, token, agent_number, destination, in_session=False):
+        self.in_session = in_session
         return self._do("click_to_call", token, agent_number, destination)
+
+    def refresh(self, token):
+        self._do("refresh", token)
+        return "agent-token-2"
 
     def hangup(self, token, call_id):
         return self._do("hangup", token, call_id)
