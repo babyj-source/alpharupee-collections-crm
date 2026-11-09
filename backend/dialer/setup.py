@@ -4,6 +4,8 @@ Built from Smartflo's public API reference. That reference documents what to SEN
 (only success and message), so after every create the CRM reads the lists back and finds the new item by its name. Anything it
 cannot find is reported, and the Admin can type the id in by hand as before. Re-running is safe: an item that already exists in
 Smartflo under the same name is adopted, not created twice."""
+import re
+
 from accounts.models import User
 from loans.workflow import DISPOSITIONS
 
@@ -29,6 +31,12 @@ CAMPAIGN_DEFAULTS = {
     "dial_status": ["0", "3", "9"],                     # new, not reachable, busy
     "hide_lead_details": True, "update_lead_details": True, "agent_only_callback": True, "enable_web_form": 0,
 }
+
+
+def clean_name(text, prefix="", limit=60):
+    """A name Smartflo accepts: letters, digits and single spaces only (no dashes, dots, slashes or other symbols)."""
+    t = re.sub(r"[^A-Za-z0-9]+", " ", f"{prefix} {text}").strip()
+    return t[:limit].strip()
 
 
 class SetupError(Exception):
@@ -128,7 +136,7 @@ def caller_did_id(client):
 def campaign_body(camp, list_id, disposition_list_id, agent_ids, did_id):
     body = dict(CAMPAIGN_DEFAULTS)
     body.update({
-        "name": f"CRM {camp.label}"[:60], "description": f"Collections CRM campaign: {camp.label}",
+        "name": clean_name(camp.label, "CRM"), "description": clean_name(camp.label, "Collections CRM campaign", 200),
         "outbound_caller_id": [str(did_id)],
         "lead_list_map": [{"list_id": str(list_id), "list_status": "1"}],
         "disposition_list": str(disposition_list_id),
@@ -155,13 +163,13 @@ def provision_campaign(camp, client):
     if not agent_ids:
         raise SetupError("No CRM agent could be matched to a Smartflo user. Fill in each agent's Smartflo login id under Setup first.")
 
-    list_name = f"CRM {camp.label}"[:60]
+    list_name = clean_name(camp.label, "CRM")
     list_id = camp.smartflo_list_id or find_id(client.list_lead_lists(), name=list_name)
     if list_id:
         steps.append("The lead list already exists in Smartflo; using it.")
     else:
         try:
-            client.create_lead_list(list_name, f"Customers for {camp.label}", LEAD_FIELDS)
+            client.create_lead_list(list_name, clean_name(camp.label, "Customers for", 200), LEAD_FIELDS)
         except SmartfloError as exc:
             raise SetupError(f"Smartflo would not create the lead list “{list_name}”. {exc}") from exc
         list_id = find_id(client.list_lead_lists(), name=list_name)
@@ -171,7 +179,7 @@ def provision_campaign(camp, client):
     camp.smartflo_list_id = list_id
     camp.save(update_fields=["smartflo_list_id"])
 
-    name = f"CRM {camp.label}"[:60]
+    name = clean_name(camp.label, "CRM")
     cid = find_id(client.list_campaigns(), name=name)
     if cid:
         steps.append("A Smartflo campaign with this name already exists; using it.")

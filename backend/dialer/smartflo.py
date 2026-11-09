@@ -48,7 +48,10 @@ def _msg(resp):
             text = ""
     except ValueError:
         text = ""
-    return re.sub(r"\s+", " ", str(text))[:300]
+    if not text:      # nothing readable in it: show the start of the raw reply (an error page, plain text) so it can be diagnosed
+        raw = re.sub(r"<[^>]+>", " ", str(getattr(resp, "text", "") or ""))
+        text = f"Reply: {raw}" if raw.strip() else ""
+    return re.sub(r"\s+", " ", str(text)).strip()[:300]
 
 
 def _id(v):
@@ -115,18 +118,41 @@ class SmartfloClient:
                           json={"data": rows, "duplicate_option": "overwrite"})
 
     # ---- set-up calls (account token), from Smartflo's public API reference (docs.smartflo.tatatelebusiness.com)
+    def _all_pages(self, path, limit=100):
+        """Every page of a list call. Smartflo lists come a page at a time (has_more / last_seen_id); reading only the first page
+        made the CRM miss things that already exist (and try to create them again). Returns {"data": [reply, reply, ...]}."""
+        replies, last = [], None
+        for _ in range(30):
+            params = {"limit": limit}
+            if last is not None:
+                params["last_seen_id"] = last
+            try:
+                data = self._call("GET", path, settings.SMARTFLO_API_TOKEN, bearer=True, params=params)
+            except SmartfloError as exc:
+                if last is None and exc.status in (400, 422):      # this list does not take paging inputs: ask plainly
+                    data = self._call("GET", path, settings.SMARTFLO_API_TOKEN, bearer=True)
+                else:
+                    raise
+            replies.append(data)
+            d = data if isinstance(data, dict) else {}
+            nxt = d.get("last_seen_id")
+            if not (d.get("has_more") or d.get("hasMore")) or nxt in (None, "") or nxt == last:
+                break
+            last = nxt
+        return {"data": replies}
+
     def list_users(self, limit=200):
-        return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, bearer=True, params={"limit": limit})
+        return self._all_pages("/v1/users", limit)
 
     def list_lead_lists(self):
-        return self._call("GET", "/v1/broadcast/lists", settings.SMARTFLO_API_TOKEN, bearer=True)
+        return self._all_pages("/v1/broadcast/lists")
 
     def create_lead_list(self, name, description, fields):
         return self._call("POST", "/v1/broadcast/list", settings.SMARTFLO_API_TOKEN, bearer=True,
                           json={"name": name, "description": description, "field": fields, "enable_outbound_based_skill": "0"})
 
     def list_campaigns(self):
-        return self._call("GET", "/v1/dialer/campaign", settings.SMARTFLO_API_TOKEN, bearer=True)
+        return self._all_pages("/v1/dialer/campaign")
 
     def create_campaign(self, body):
         """Smartflo's tested route for a dialler campaign (their e-mail): cloudphone host, account token sent plain. It answers
@@ -140,7 +166,7 @@ class SmartfloClient:
         return self._call("GET", "/v1/my_number", settings.SMARTFLO_API_TOKEN)
 
     def list_disposition_lists(self):
-        return self._call("GET", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True)
+        return self._all_pages("/v1/dialer/disposition_list")
 
     def create_disposition_list(self, name, description):
         return self._call("POST", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True,

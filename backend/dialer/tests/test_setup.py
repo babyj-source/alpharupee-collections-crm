@@ -3,6 +3,7 @@ from unittest import mock
 from django.test import override_settings
 
 from dialer import views
+from dialer.setup import clean_name
 from dialer.models import Campaign, DispositionMap, SmartfloSetting
 from dialer.smartflo import SmartfloClient, SmartfloError, find_id
 from dialer.tests.test_dialer import ON, DialerBase, FakeSmartflo
@@ -133,6 +134,20 @@ class SetupFlowTests(DialerBase):
         self.assertEqual(self.post(self.admin, "smartflo/campaign/dpd8_15").status_code, 200)       # try again after the fix
         self.assertEqual(len(self.fake.lead_lists), 1)                                              # the list was reused
 
+    def test_names_sent_to_smartflo_have_no_special_characters(self):
+        self.assertEqual(clean_name("8–15 days late", "CRM"), "CRM 8 15 days late")
+        self.assertEqual(clean_name("Promise to pay (today) / PTP & more!", "CRM"), "CRM Promise to pay today PTP more")
+        self.assertEqual(clean_name("  Zażółć  ", "CRM"), "CRM Za")
+        self.assertEqual(len(clean_name("x" * 100, "CRM")), 60)
+        self.post(self.admin, "smartflo/outcomes")
+        Campaign.objects.filter(key="dpd8_15").update(label="8-15 DPD · early/late")
+        r = self.post(self.admin, "smartflo/campaign/dpd8_15")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = next(c[1] for c in self.fake.calls if c[0] == "create_campaign")
+        self.assertEqual((body["name"], self.fake.lead_lists[0]["name"]), ("CRM 8 15 DPD early late", "CRM 8 15 DPD early late"))
+        for text in (body["name"], body["description"]):
+            self.assertRegex(text, r"^[A-Za-z0-9 ]+$")
+
     def test_a_refused_lead_list_says_so(self):
         from dialer.smartflo import SmartfloError as E
         self.post(self.admin, "smartflo/outcomes")
@@ -145,8 +160,8 @@ class SetupFlowTests(DialerBase):
         self.post(self.admin, "smartflo/outcomes")
         self.fake.lead_lists.append({"id": 777, "name": "CRM 8–15 days late"})
         label = Campaign.objects.get(key="dpd8_15").label
-        self.fake.lead_lists[0]["name"] = f"CRM {label}"
-        self.fake.campaigns.append({"id": 888, "name": f"CRM {label}"})
+        self.fake.lead_lists[0]["name"] = clean_name(label, "CRM")
+        self.fake.campaigns.append({"id": 888, "name": clean_name(label, "CRM")})
         r = self.post(self.admin, "smartflo/campaign/dpd8_15")
         self.assertEqual(r.status_code, 200, r.content)
         self.assertNotIn("create_campaign", self.fake.names())
@@ -237,6 +252,57 @@ class ClientSetupTests(Base):
         self.assertEqual(h.sent["json"], {"disposition_status": "77", "unique_id": "u-1"})
         with self.assertRaisesMessage(SmartfloError, "Call not found"):
             SmartfloClient(self.Http(body={"success": False, "message": "Call not found"})).disposition("T", "u-1", 77)
+
+    @ON
+    def test_lists_are_read_page_by_page_so_nothing_that_exists_is_missed(self):
+        pages = [{"has_more": True, "last_seen_id": 40, "data": [{"id": 1, "name": "A"}]}, {"has_more": False, "last_seen_id": 41, "data": [{"id": 2, "name": "CRM 8-15 DPD"}]}]
+        sent = []
+
+        class Http:
+            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+                sent.append(dict(params or {}))
+
+                class R:
+                    status_code = 200
+
+                    def json(self_inner):
+                        return pages[min(len(sent) - 1, 1)]
+                return R()
+        out = SmartfloClient(Http()).list_lead_lists()
+        self.assertEqual(find_id(out, name="CRM 8-15 DPD"), "2")           # found on the second page
+        self.assertEqual(sent, [{"limit": 100}, {"limit": 100, "last_seen_id": 40}])
+
+    @ON
+    def test_a_list_that_rejects_paging_inputs_is_asked_again_plainly(self):
+        calls = []
+
+        class Http:
+            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+                calls.append(params)
+
+                class R:
+                    status_code = 422 if params else 200
+
+                    def json(self_inner):
+                        return {"data": [{"id": 7, "name": "X"}]}
+                return R()
+        self.assertEqual(find_id(SmartfloClient(Http()).list_campaigns(), name="X"), "7")
+        self.assertEqual(calls, [{"limit": 100}, None])
+
+    @ON
+    def test_an_unreadable_422_shows_the_start_of_the_reply(self):
+        class Http:
+            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+                class R:
+                    status_code = 422
+                    text = "<html><body>Name already exists for this account</body></html>"
+
+                    def json(self_inner):
+                        raise ValueError
+                return R()
+        with self.assertRaises(SmartfloError) as cm:
+            SmartfloClient(Http()).create_lead_list("L", "d", ["A"])
+        self.assertIn("Name already exists for this account", str(cm.exception))
 
     @ON
     def test_a_422_shows_the_field_errors_smartflo_sent(self):
