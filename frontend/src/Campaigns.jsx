@@ -245,7 +245,7 @@ function Setup() {
 
       <section className="card">
         <h2>Connection</h2>
-        <p>Switch: <strong>{d.status.enabled ? "ON" : "OFF"}</strong> · Account token on the server: <strong>{d.status.token_set ? "set" : "not set"}</strong> · Outgoing number: <strong>{d.status.caller_id_set ? "set" : "not set"}</strong> · Outcomes list in Smartflo: <strong>{d.status.outcome_list_id ? "made" : "not made"}</strong></p>
+        <p>Switch: <strong>{d.status.enabled ? "ON" : "OFF"}</strong> · Account token on the server: <strong>{d.status.token_set ? "set" : "not set"}</strong> · Outgoing number: <strong>{d.status.caller_id_set ? "set" : "not set"}</strong> · Outcomes list in Smartflo: <strong>{d.status.outcome_list_id ? "made" : "made automatically with the first campaign"}</strong></p>
         <p className="muted small">The switch (<code>SMARTFLO_ENABLED</code>) and the token (<code>SMARTFLO_API_TOKEN</code>) are set on the server, never in this screen.</p>
         <div className="row">
           <button onClick={async () => setCheck(await api("/dialer/check", { method: "POST" }))}>Test connection</button>
@@ -301,7 +301,7 @@ function Setup() {
           <button onClick={() => save(() => api("/dialer/dispositions", { method: "PUT", body: { map: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_status_id])) } }), "Outcome ids saved.")}>Save outcome ids</button>
           <button className="ghost" disabled={busy || !d.status.enabled} onClick={makeOutcomes}>{busy ? "Creating…" : d.status.outcome_list_id ? "Re-check outcomes in Smartflo" : "Create outcomes in Smartflo"}</button>
         </div>
-        <p className="muted small" style={{ padding: "0 10px" }}>After an auto-dialled call, Smartflo needs the outcome to release the agent for the next customer. “Create outcomes in Smartflo” makes a list called “CRM call outcomes” with these {d.dispositions.length} outcomes and fills in the ids. Do this once, before creating campaigns in Smartflo.</p>
+        <p className="muted small" style={{ padding: "0 10px" }}>Agents save the outcome once, on the customer page in the CRM; the CRM passes it to Smartflo, which needs it to free the agent for the next customer. “Create in Smartflo” on a campaign makes this list (“CRM call outcomes”, {d.dispositions.length} outcomes) by itself when it is missing, so you do not need to do anything here. The button is only for re-checking the list.</p>
       </section>
     </>
   );
