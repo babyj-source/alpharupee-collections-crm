@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 concurrency:
   group: deploy-production
@@ -25,6 +26,29 @@ jobs:
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::Tag $GITHUB_REF_NAME is not on main. Release tags must point at a commit merged to main."
             exit 1
+          fi
+      - name: CI must be green on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bad=0
+          for job in scripts backend frontend; do
+            c="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+                 --jq "[.check_runs[] | select(.name==\"$job\")] | (max_by(.id) // {}) | .conclusion // \"missing\"")"
+            echo "CI job $job: $c"
+            [ "$c" = "success" ] || bad=1
+          done
+          if [ "$bad" = 1 ]; then
+            echo "::error::CI has not passed on commit $GITHUB_SHA. Wait for the checks on main to go green, then tag again."
+            exit 1
+          fi
+      - name: Calling-hours reminder
+        run: |
+          H="$(TZ=Asia/Kolkata date +%H)"
+          if [ "$H" -ge 8 ] && [ "$H" -lt 19 ]; then
+            echo "::warning::It is $(TZ=Asia/Kolkata date +%H:%M) IST, inside the 08:00-19:00 calling window. The restart drops agents' open screens for a few seconds. The approver should prefer to wait until after 19:00 unless this is urgent."
+            echo "### Calling hours" >> "$GITHUB_STEP_SUMMARY"
+            echo "This release was started at $(TZ=Asia/Kolkata date +%H:%M) IST, inside the calling window." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   deploy:

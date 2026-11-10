@@ -17,6 +17,11 @@ source "$HERE/env/$ENV_NAME.env"
 export AWS_DEFAULT_REGION="$AWS_REGION"
 
 P="$NAME_PREFIX"
+# Optional settings (UAT leaves them out; Production sets them in env/production.env)
+DB_MULTI_AZ="${DB_MULTI_AZ:-false}"; DB_MAX_STORAGE_GB="${DB_MAX_STORAGE_GB:-}"; DB_TUNED="${DB_TUNED:-false}"
+DB_MAINT_WINDOW="${DB_MAINT_WINDOW:-}"; DB_BACKUP_WINDOW="${DB_BACKUP_WINDOW:-}"
+APP_TERMINATION_PROTECTION="${APP_TERMINATION_PROTECTION:-false}"; APP_SNAPSHOTS="${APP_SNAPSHOTS:-false}"
+ALERT_EMAIL="${ALERT_EMAIL:-}"; LMS_SECRET_NAME="${LMS_SECRET_NAME:-}"
 TAGS_COMMON="Key=Project,Value=collections-crm Key=Env,Value=$ENV_TAG"
 say() { printf '\n==> %s\n' "$*"; }
 tagspec() { echo "ResourceType=$1,Tags=[{Key=Name,Value=$2},{Key=Project,Value=collections-crm},{Key=Env,Value=$ENV_TAG}]"; }
@@ -113,9 +118,9 @@ if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
     "Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
   aws iam attach-role-policy --role-name "$ROLE" --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 fi
+# Secret access is added below, scoped to this environment's own database secret, once the database exists.
 aws iam put-role-policy --role-name "$ROLE" --policy-name read-db-secret --policy-document "{
   \"Version\":\"2012-10-17\",\"Statement\":[
-   {\"Effect\":\"Allow\",\"Action\":[\"secretsmanager:GetSecretValue\"],\"Resource\":\"arn:aws:secretsmanager:$AWS_REGION:$ACCOUNT:secret:rds!db-*\"},
    {\"Effect\":\"Allow\",\"Action\":[\"rds:DescribeDBInstances\"],\"Resource\":\"*\"}]}"
 if ! aws iam get-instance-profile --instance-profile-name "$ROLE" >/dev/null 2>&1; then
   aws iam create-instance-profile --instance-profile-name "$ROLE" >/dev/null
@@ -129,6 +134,27 @@ DB_ID="$P-db"
 if ! aws rds describe-db-instances --db-instance-identifier "$DB_ID" >/dev/null 2>&1; then
   aws rds create-db-subnet-group --db-subnet-group-name "$P-db-subnets" --db-subnet-group-description "$P database subnets" \
     --subnet-ids "$PRIV_A" "$PRIV_B" --tags $TAGS_COMMON >/dev/null 2>&1 || true
+  DB_EXTRA=()
+  if [ "$DB_MULTI_AZ" = "true" ]; then DB_EXTRA+=(--multi-az); else DB_EXTRA+=(--no-multi-az); fi
+  [ -z "$DB_MAX_STORAGE_GB" ] || DB_EXTRA+=(--max-allocated-storage "$DB_MAX_STORAGE_GB")
+  [ -z "$DB_MAINT_WINDOW" ] || DB_EXTRA+=(--preferred-maintenance-window "$DB_MAINT_WINDOW")
+  [ -z "$DB_BACKUP_WINDOW" ] || DB_EXTRA+=(--preferred-backup-window "$DB_BACKUP_WINDOW")
+  if [ "$DB_TUNED" = "true" ]; then
+    PG_FAMILY="postgres${DB_ENGINE_VERSION%%.*}"
+    PG_NAME="$P-pg"
+    if ! aws rds describe-db-parameter-groups --db-parameter-group-name "$PG_NAME" >/dev/null 2>&1; then
+      aws rds create-db-parameter-group --db-parameter-group-name "$PG_NAME" --db-parameter-group-family "$PG_FAMILY" \
+        --description "$P settings" --tags $TAGS_COMMON >/dev/null
+    fi
+    # All of these apply without a restart. rds.force_ssl rejects any connection that is not encrypted.
+    aws rds modify-db-parameter-group --db-parameter-group-name "$PG_NAME" --parameters \
+      "ParameterName=rds.force_ssl,ParameterValue=1,ApplyMethod=immediate" \
+      "ParameterName=log_min_duration_statement,ParameterValue=500,ApplyMethod=immediate" \
+      "ParameterName=idle_in_transaction_session_timeout,ParameterValue=60000,ApplyMethod=immediate" \
+      "ParameterName=autovacuum_vacuum_scale_factor,ParameterValue=0.05,ApplyMethod=immediate" \
+      "ParameterName=autovacuum_analyze_scale_factor,ParameterValue=0.02,ApplyMethod=immediate" >/dev/null
+    DB_EXTRA+=(--db-parameter-group-name "$PG_NAME")
+  fi
   aws rds create-db-instance \
     --db-instance-identifier "$DB_ID" \
     --engine postgres --engine-version "$DB_ENGINE_VERSION" \
@@ -136,9 +162,9 @@ if ! aws rds describe-db-instances --db-instance-identifier "$DB_ID" >/dev/null 
     --allocated-storage "$DB_STORAGE_GB" --storage-type gp3 --storage-encrypted \
     --db-name crm --master-username crm_admin --manage-master-user-password \
     --db-subnet-group-name "$P-db-subnets" --vpc-security-group-ids "$DB_SG" \
-    --no-publicly-accessible --backup-retention-period "$DB_BACKUP_DAYS" \
-    --no-multi-az --auto-minor-version-upgrade --deletion-protection \
-    --enable-performance-insights --tags $TAGS_COMMON >/dev/null
+    --no-publicly-accessible --backup-retention-period "$DB_BACKUP_DAYS" --copy-tags-to-snapshot \
+    --auto-minor-version-upgrade --deletion-protection \
+    --enable-performance-insights "${DB_EXTRA[@]}" --tags $TAGS_COMMON >/dev/null
   echo "    creation started (takes about 10 minutes)"
 else
   echo "    $DB_ID already exists"
@@ -185,16 +211,92 @@ say "Waiting for the database to become available"
 aws rds wait db-instance-available --db-instance-identifier "$DB_ID"
 DB_HOST="$(aws rds describe-db-instances --db-instance-identifier "$DB_ID" --query 'DBInstances[0].Endpoint.Address' --output text)"
 
+# ---------------------------------------------------------------- read access to exactly two secrets
+say "Instance role: read only this environment's secrets"
+DB_SECRET_ARN="$(aws rds describe-db-instances --db-instance-identifier "$DB_ID" --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)"
+SECRET_RESOURCES="\"$DB_SECRET_ARN\""
+if [ -n "$LMS_SECRET_NAME" ]; then
+  SECRET_RESOURCES="$SECRET_RESOURCES,\"arn:aws:secretsmanager:$AWS_REGION:$ACCOUNT:secret:$LMS_SECRET_NAME-*\""
+fi
+aws iam put-role-policy --role-name "$ROLE" --policy-name read-secrets --policy-document "{
+  \"Version\":\"2012-10-17\",\"Statement\":[
+   {\"Effect\":\"Allow\",\"Action\":[\"secretsmanager:GetSecretValue\"],\"Resource\":[$SECRET_RESOURCES]}]}"
+echo "    $DB_SECRET_ARN${LMS_SECRET_NAME:+  and  $LMS_SECRET_NAME}"
+
+# ---------------------------------------------------------------- protection and backups of the server
+if [ "$APP_TERMINATION_PROTECTION" = "true" ]; then
+  say "Server termination protection"
+  aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" --disable-api-termination
+  echo "    on (turn it off in the console before deleting the server on purpose)"
+fi
+
+if [ "$APP_SNAPSHOTS" = "true" ]; then
+  say "Daily snapshot of the server disk (kept 14 days)"
+  aws iam get-role --role-name AWSDataLifecycleManagerDefaultRole >/dev/null 2>&1 \
+    || aws dlm create-default-role --resource-type snapshot >/dev/null
+  DLM_ROLE_ARN="arn:aws:iam::$ACCOUNT:role/AWSDataLifecycleManagerDefaultRole"
+  DLM_ID="$(aws dlm get-lifecycle-policies --query "Policies[?Description=='$P daily snapshots'].PolicyId | [0]" --output text 2>/dev/null | grep -v '^None$' || true)"
+  if [ -z "$DLM_ID" ]; then
+    aws dlm create-lifecycle-policy --description "$P daily snapshots" --state ENABLED --execution-role-arn "$DLM_ROLE_ARN" \
+      --tags $TAGS_COMMON --policy-details '{
+        "ResourceTypes":["VOLUME"],
+        "TargetTags":[{"Key":"Name","Value":"'"$P"'-app-root"}],
+        "Schedules":[{"Name":"daily","CopyTags":true,
+          "CreateRule":{"CronExpression":"cron(0 21 * * ? *)"},
+          "RetainRule":{"Count":14}}]}' >/dev/null
+    echo "    created (runs 02:30 IST)"
+  else
+    echo "    already exists ($DLM_ID)"
+  fi
+fi
+
+# ---------------------------------------------------------------- alarms
+if [ -n "$ALERT_EMAIL" ]; then
+  say "Alarms (e-mail to $ALERT_EMAIL)"
+  TOPIC_ARN="$(aws sns create-topic --name "$P-alerts" --tags $TAGS_COMMON --query TopicArn --output text)"
+  aws sns subscribe --topic-arn "$TOPIC_ARN" --protocol email --notification-endpoint "$ALERT_EMAIL" >/dev/null
+  alarm() { # name, then the rest of the put-metric-alarm arguments
+    local n="$1"; shift
+    aws cloudwatch put-metric-alarm --alarm-name "$P-$n" --alarm-actions "$TOPIC_ARN" --ok-actions "$TOPIC_ARN" \
+      --treat-missing-data notBreaching --tags $TAGS_COMMON "$@"
+  }
+  # The server: if the hardware under it fails, AWS restarts it on healthy hardware (same disk, same IP).
+  aws cloudwatch put-metric-alarm --alarm-name "$P-server-recover" --namespace AWS/EC2 --metric-name StatusCheckFailed_System \
+    --dimensions Name=InstanceId,Value="$INSTANCE_ID" --statistic Maximum --period 60 --evaluation-periods 2 \
+    --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+    --alarm-actions "arn:aws:automate:$AWS_REGION:ec2:recover" "$TOPIC_ARN" --tags $TAGS_COMMON
+  alarm server-unreachable --namespace AWS/EC2 --metric-name StatusCheckFailed_Instance \
+    --dimensions Name=InstanceId,Value="$INSTANCE_ID" --statistic Maximum --period 60 --evaluation-periods 3 \
+    --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
+  alarm server-cpu-high --namespace AWS/EC2 --metric-name CPUUtilization \
+    --dimensions Name=InstanceId,Value="$INSTANCE_ID" --statistic Average --period 300 --evaluation-periods 3 \
+    --threshold 80 --comparison-operator GreaterThanThreshold
+  # The database
+  alarm db-cpu-high --namespace AWS/RDS --metric-name CPUUtilization \
+    --dimensions Name=DBInstanceIdentifier,Value="$DB_ID" --statistic Average --period 300 --evaluation-periods 3 \
+    --threshold 70 --comparison-operator GreaterThanThreshold
+  alarm db-storage-low --namespace AWS/RDS --metric-name FreeStorageSpace \
+    --dimensions Name=DBInstanceIdentifier,Value="$DB_ID" --statistic Minimum --period 300 --evaluation-periods 2 \
+    --threshold $(( DB_STORAGE_GB * 1024 * 1024 * 1024 / 5 )) --comparison-operator LessThanThreshold
+  alarm db-memory-low --namespace AWS/RDS --metric-name FreeableMemory \
+    --dimensions Name=DBInstanceIdentifier,Value="$DB_ID" --statistic Average --period 300 --evaluation-periods 3 \
+    --threshold 1073741824 --comparison-operator LessThanThreshold
+  alarm db-connections-high --namespace AWS/RDS --metric-name DatabaseConnections \
+    --dimensions Name=DBInstanceIdentifier,Value="$DB_ID" --statistic Maximum --period 300 --evaluation-periods 2 \
+    --threshold 200 --comparison-operator GreaterThanThreshold
+  echo "    7 alarms created. AWS e-mails $ALERT_EMAIL a confirmation: click 'Confirm subscription' or no alarm will reach you."
+fi
+
 cat <<MSG
 
 ==================== $ENV_NAME is built ====================
 Server instance : $INSTANCE_ID
-Server IP       : $EIP        (DEPLOY_HOST)
+Server IP       : $EIP        (DEPLOY_HOST; give this IP to the LMS, Smartflo, MSG91 and Easebuzz teams for their allow-lists)
 Database host   : $DB_HOST  (private, reachable only from the server)
 Site name       : $DOMAIN
 
 Next:
  1. DNS: create an A record   $DOMAIN  ->  $EIP
  2. Save these details:  bash infra/aws/show-env.sh $ENV_NAME
- 3. Follow docs/AWS_UAT_SETUP.md from step 4 (connect, create the .env file, add GitHub variables, HTTPS).
+ 3. UAT: follow docs/AWS_UAT_SETUP.md from step 4.   Production: follow docs/AWS_PRODUCTION_SETUP.md from step 4.
 MSG

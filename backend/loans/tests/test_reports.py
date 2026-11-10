@@ -127,7 +127,8 @@ class SentLogAndAutoTests(Base):
                                                   oldest_due_date=timezone.localdate() - timezone.timedelta(days=45))
         Loan.objects.filter(pk=self.l1.pk).update(crm_status="dispute")      # keeps L2 the only account the automatic run can pick
         WhatsappTemplate.objects.filter(key="wa_overdue").update(header_image_url="https://img.example/a.jpg")
-        for p in (mock.patch("messaging.service.in_window", return_value=True), mock.patch("messaging.management.commands.auto_whatsapp.in_window", return_value=True)):
+        for p in (mock.patch("messaging.service.in_window", return_value=True), mock.patch("messaging.whatsapp.in_window", return_value=True),
+                  mock.patch("messaging.management.commands.auto_whatsapp.in_window", return_value=True)):
             p.start()
             self.addCleanup(p.stop)
 

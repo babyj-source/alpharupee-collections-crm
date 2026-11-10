@@ -1,0 +1,68 @@
+name: Roll back Production
+
+# Puts Production back on the release before the live one (code only: the database is NOT rolled back).
+# Run it from Actions > Roll back Production > Run workflow (branch main). The "production" environment's
+# required reviewers must approve, the same as for a release.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type ROLLBACK to confirm'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    if: inputs.confirm == 'ROLLBACK'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      HEALTH_URL: ${{ vars.HEALTH_URL }}
+      RESTART_CMD: ${{ vars.RESTART_CMD }}
+    steps:
+      - name: Prepare SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Roll back and check health
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20"
+          REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh $SSH_OPTS "$REMOTE" "RESTART_CMD='$RESTART_CMD' bash '$DEPLOY_PATH/current/server-tools/rollback.sh' --base '$DEPLOY_PATH'"
+          for i in $(seq 1 10); do
+            if ssh $SSH_OPTS "$REMOTE" "curl -fsS --max-time 5 '$HEALTH_URL' >/dev/null"; then echo "healthy after rollback"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::Rolled back, but the health check still fails. Check the server (Session Manager) now."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Roll back Production"
+            echo "- Result: \`${{ job.status }}\`"
+            echo "- The database was not changed. If the release you left had a migration, see docs/AWS_PRODUCTION_SETUP.md (Rolling back)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH key from the runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
