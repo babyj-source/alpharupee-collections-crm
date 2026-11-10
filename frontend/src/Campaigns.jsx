@@ -296,7 +296,7 @@ function Setup() {
       <section className="card scroll">
         <h2 style={{ padding: "0 10px" }}>Call outcomes in Smartflo</h2>
         <table>
-          <thead><tr><th>CRM outcome</th><th>Smartflo code</th><th>Smartflo disposition id (if Smartflo gives one)</th></tr></thead>
+          <thead><tr><th>CRM outcome</th><th>Smartflo code</th><th>Smartflo outcome number (required)</th></tr></thead>
           <tbody>
             {d.dispositions.map((x, i) => (
               <tr key={x.code}>
@@ -311,7 +311,7 @@ function Setup() {
           <button onClick={() => save(() => api("/dialer/dispositions", { method: "PUT", body: { map: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_status_id])), codes: Object.fromEntries(d.dispositions.map((x) => [x.code, x.smartflo_code])) } }), "Outcome codes and ids saved.")}>Save outcome codes and ids</button>
           <button className="ghost" disabled={busy || !d.status.enabled} onClick={makeOutcomes}>{busy ? "Creating…" : d.status.outcome_list_id ? "Re-check outcomes in Smartflo" : "Create outcomes in Smartflo"}</button>
         </div>
-        <p className="muted small" style={{ padding: "0 10px" }}>Agents save the outcome once, on the customer page in the CRM; the CRM passes it to Smartflo, which needs it to free the agent for the next customer. “Create in Smartflo” on a campaign makes this list (“CRM call outcomes”, {d.dispositions.length} outcomes) by itself when it is missing, so you do not need to do anything here. The button is only for re-checking the list.</p>
+        <p className="muted small" style={{ padding: "0 10px" }}>Agents save the outcome once, on the customer page in the CRM; the CRM passes it to Smartflo, which needs it to free the agent for the next customer. “Create in Smartflo” on a campaign makes this list (“CRM call outcomes”, {d.dispositions.length} outcomes) by itself when it is missing, and then reads each outcome's number from Smartflo. Smartflo only accepts the NUMBER when the CRM reports an outcome, so if a number is empty here, press “Re-check outcomes in Smartflo”; if it stays empty, type the number from Smartflo.</p>
       </section>
     </>
   );

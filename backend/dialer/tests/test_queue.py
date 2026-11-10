@@ -201,12 +201,43 @@ class QueueTests(DialerBase):
         d = self.poll()
         self.assertEqual((d["awaiting_outcome"], ("disposition", "agent-token", "c-1", "321") in self.fake.calls), (False, True))
 
-    def test_with_only_short_codes_saved_the_outcome_is_reported_to_smartflo_by_its_code(self):
+    def test_short_codes_alone_are_never_sent_because_smartflo_wants_a_number(self):
         self.answered()
         self.poll()
         DispositionMap.objects.update(smartflo_status_id="")            # codes stay (they are saved by the migration)
         r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
-        self.assertEqual((r["released"], self.fake.calls[-1]), (True, ("disposition", "agent-token", "c-1", "paid")))
+        self.assertEqual(r["released"], False)
+        self.assertIn("has no number", r["warning"])
+        self.assertFalse([c for c in self.fake.calls if c[0] == "disposition"])
+        DispositionMap.objects.update(smartflo_status_id="abc")         # not a number either
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "paid_today"}).json()
+        self.assertFalse([c for c in self.fake.calls if c[0] == "disposition"])
+
+    def test_outcome_ids_are_read_from_smartflos_outcome_list(self):
+        from dialer import setup as st
+        self.fake.list_disposition_lists = lambda: {"data": [{"id": 9, "name": st.OUTCOME_LIST}]}      # the list reply shows no outcomes
+        self.fake.create_disposition_list = lambda *a: {}
+        self.fake.add_disposition_status = lambda *a: (_ for _ in ()).throw(SmartfloError("(422) The name has already been taken."))
+        self.fake.list_disposition_statuses = lambda list_id: {"data": [
+            {"id": 71001, "name": "No answer", "code": "noans"}, {"id": 71002, "name": "Connected paid today", "code": "paid"}]}
+        DispositionMap.objects.update(smartflo_status_id="")
+        res = st.provision_outcomes(self.fake)
+        self.assertEqual(res["mapped"], 2)
+        self.assertEqual(DispositionMap.objects.get(crm_code="no_answer").smartflo_status_id, "71001")
+        self.assertEqual(DispositionMap.objects.get(crm_code="paid_today").smartflo_status_id, "71002")
+
+    def test_a_refused_outcome_list_read_is_reported_not_fatal(self):
+        from dialer import setup as st
+        self.fake.list_disposition_lists = lambda: {"data": [{"id": 9, "name": st.OUTCOME_LIST}]}
+        self.fake.create_disposition_list = lambda *a: {}
+        self.fake.add_disposition_status = lambda *a: (_ for _ in ()).throw(SmartfloError("(422) The name has already been taken."))
+
+        def refuse(list_id):
+            raise SmartfloError("Smartflo refused the request (404). Not found")
+        self.fake.list_disposition_statuses = refuse
+        res = st.provision_outcomes(self.fake)
+        self.assertTrue(any("Could not read the outcome ids" in x for x in res["steps"]))
+        self.assertTrue(any("NUMBER" in x for x in res["steps"]))
 
     def test_create_outcomes_accepts_ones_already_made_by_hand(self):
         from dialer import setup as st
@@ -220,5 +251,5 @@ class QueueTests(DialerBase):
         self.fake.add_disposition_status = add
         res = st.provision_outcomes(self.fake)
         self.assertEqual((len(calls), res["mapped"], len(res["missing"])), (11, 0, 11))
-        self.assertTrue(any("short codes" in x for x in res["steps"]))
+        self.assertTrue(any("NUMBER" in x for x in res["steps"]))
         self.assertEqual(DispositionMap.objects.get(crm_code="no_answer").smartflo_code, "noans")
