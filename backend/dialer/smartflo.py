@@ -92,7 +92,10 @@ class SmartfloClient:
         try:
             data = self._send(method, path, token, first, json, params, base)
         except SmartfloError as exc:
-            if exc.status != 401 or "token" not in str(exc).lower():
+            msg = str(exc).lower()
+            # "Unauthenticated user" is the same kind of refusal as a bad token (wrong header form). Never for sign-in: a wrong
+            # password must not be tried twice, because Smartflo locks a login after too many attempts.
+            if exc.status != 401 or path == "/v1/auth/login" or not ("token" in msg or "unauthenticated" in msg):
                 raise
             try:
                 data = self._send(method, path, token, not first, json, params, base)
@@ -240,7 +243,7 @@ class SmartfloClient:
 
     def refresh(self, token):
         """A fresh 60-minute token for the same agent, so a long shift does not need the password again. Returns the new token."""
-        data = self._call("POST", "/v1/auth/refresh", token)
+        data = self._call("POST", "/v1/auth/refresh", token, bearer=True)
         new = data.get("access_token") if isinstance(data, dict) else None
         if not new:
             raise SmartfloError("Smartflo did not give a new token.")
@@ -248,7 +251,7 @@ class SmartfloClient:
 
     def disposition(self, token, unique_id, status_id):
         """Tell the dialler the outcome of the call just ended, which frees the agent for the next customer."""
-        data = self._call("POST", settings.SMARTFLO_DISPOSITION_PATH, token,
+        data = self._call("POST", settings.SMARTFLO_DISPOSITION_PATH, token, bearer=True,   # an agent's token, like session/create
                           json={"disposition_status": str(status_id), "unique_id": str(unique_id)})
         _refusal(data, "Smartflo did not take the outcome.")
         return data
