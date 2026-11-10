@@ -337,7 +337,7 @@ class ClientSetupTests(Base):
             SmartfloClient(self.Http(body={"success": False, "message": "Something else"})).logout("T", "5")
         h = self.Http(body={"success": True, "access_token": "T2", "expires_in": 3600})
         self.assertEqual(SmartfloClient(h).refresh("T1"), "T2")
-        self.assertEqual((h.sent["method"], h.sent["url"].endswith("/v1/auth/refresh"), h.sent["headers"]["Authorization"]), ("POST", True, "T1"))
+        self.assertEqual((h.sent["method"], h.sent["url"].endswith("/v1/auth/refresh"), h.sent["headers"]["Authorization"]), ("POST", True, "Bearer T1"))
         with self.assertRaises(SmartfloError):
             SmartfloClient(self.Http(body={"success": False, "message": "Invalid token provided"})).refresh("T1")
 

@@ -655,7 +655,7 @@ class ClientTests(Base):
         c.logout("T1", "390326")
         self.assertEqual((h.sent["url"].endswith("/v1/dialer/logout"), h.sent["json"]), (True, {"campaign_id": "390326"}))
         c.disposition("T1", "u-1", 153899)
-        self.assertEqual((h.sent["headers"]["Authorization"], h.sent["json"]), ("T1", {"disposition_status": "153899", "unique_id": "u-1"}))
+        self.assertEqual((h.sent["headers"]["Authorization"], h.sent["json"]), ("Bearer T1", {"disposition_status": "153899", "unique_id": "u-1"}))   # an agent's token, sent like session/create
         c.live_calls("T1", "0606")
         self.assertEqual((h.sent["method"], h.sent["params"]), ("GET", {"agent_number": "0606"}))
         c.click_to_call("T1", "0606", "9876543210")
@@ -726,6 +726,22 @@ class ClientTests(Base):
         SmartfloClient._prefer.clear()
         h = self.PickyHttp("bearer")                # a plain-first endpoint where Smartflo wants Bearer
         self.assertEqual(SmartfloClient(h).bulk_add_leads("1", [{"field_0": "9"}]), {"ok": 1})
+        SmartfloClient._prefer.clear()
+
+    @ON
+    def test_unauthenticated_user_also_tries_the_other_header_form_and_the_outcome_goes_as_bearer_first(self):
+        SmartfloClient._prefer.clear()
+        h = self.PickyHttp("plain", msg="Unauthenticated user")      # the wording Smartflo used on the outcome call
+        self.assertEqual(SmartfloClient(h).probe(), {"ok": 1})
+        self.assertEqual(h.n, 2)
+        SmartfloClient._prefer.clear()
+        h = self.Http(body={"success": True})
+        SmartfloClient(h).disposition("AGENTTOKEN", "uid1", 7)
+        self.assertEqual(h.sent["headers"]["Authorization"], "Bearer AGENTTOKEN")
+        h = self.PickyHttp("never", msg="Unauthenticated user")      # a sign-in is never repeated
+        with self.assertRaises(SmartfloError):
+            SmartfloClient(h).agent_login("a@b.test", "pw")
+        self.assertEqual(h.n, 1)
         SmartfloClient._prefer.clear()
 
     @ON
