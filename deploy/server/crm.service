@@ -8,8 +8,13 @@ ConditionPathExists=/opt/crm/current/backend/manage.py
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/crm/current/backend
+# Worker settings: 3 processes x 4 threads, a worker restarts itself after about 1000 requests (keeps memory flat).
+# To change them, set GUNICORN_CMD_ARGS in /opt/crm/shared/.env (that file wins over the line below) and restart.
+Environment="GUNICORN_CMD_ARGS=--workers 3 --worker-class gthread --threads 4 --timeout 30 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100"
+# A web request that runs longer than this in the database is cancelled. Batch jobs (timers) are not affected.
+Environment=DB_STATEMENT_TIMEOUT_MS=60000
 EnvironmentFile=/opt/crm/shared/.env
-ExecStart=/opt/crm/current/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 60 --access-logfile -
+ExecStart=/opt/crm/current/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --access-logfile -
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

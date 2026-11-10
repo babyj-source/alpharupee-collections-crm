@@ -14,6 +14,7 @@ if [ -f backend/manage.py ]; then
   [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE. Run deploy/server/setup-env.sh first." >&2; exit 1; }
   set -a; . "$ENV_FILE"; set +a
   venv/bin/python backend/manage.py migrate --noinput
+  venv/bin/python backend/manage.py createcachetable   # shared cache for rate limits; does nothing if it exists
   venv/bin/python backend/manage.py collectstatic --noinput
 else
   echo "post-deploy: static release only (no backend yet)"

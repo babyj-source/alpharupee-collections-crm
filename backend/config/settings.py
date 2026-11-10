@@ -74,7 +74,22 @@ else:
             "CONN_MAX_AGE": 60,
         }
     }
+    # Production: verify the database's certificate too (DB_SSLMODE=verify-full with the RDS certificate bundle).
+    if env("DB_SSLROOTCERT"):
+        DATABASES["default"]["OPTIONS"]["sslrootcert"] = env("DB_SSLROOTCERT")
+    # Cancels a web request's query that runs too long. Set only on the web service, so batch jobs are not cut short.
+    if env("DB_STATEMENT_TIMEOUT_MS"):
+        DATABASES["default"]["OPTIONS"]["options"] = f"-c statement_timeout={int(env('DB_STATEMENT_TIMEOUT_MS'))}"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ---- cache. Login/OTP limits and the dialer's one-at-a-time lock must be shared by every gunicorn worker, so on the
+# servers they live in the database (table created by `manage.py createcachetable`, run by deploy/post-deploy.sh).
+# Tests and local work use the in-process cache.
+if USE_SQLITE or DEBUG or env("CACHE_BACKEND", "database") == "locmem":
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+else:
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "django_cache",
+                          "OPTIONS": {"MAX_ENTRIES": 20000, "CULL_FREQUENCY": 4}}}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -98,7 +113,8 @@ SESSION_COOKIE_SECURE = not (DEBUG or USE_SQLITE)
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 CSRF_COOKIE_SAMESITE = "Lax"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-SECURE_HSTS_SECONDS = 0 if (DEBUG or USE_SQLITE) else 86400  # raise to a year once HTTPS is settled
+# One day to start. Production raises it to a year (DJANGO_HSTS_SECONDS=31536000) once HTTPS is settled.
+SECURE_HSTS_SECONDS = 0 if (DEBUG or USE_SQLITE) else int(env("DJANGO_HSTS_SECONDS", "86400"))
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 

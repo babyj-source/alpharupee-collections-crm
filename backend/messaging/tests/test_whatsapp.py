@@ -34,9 +34,11 @@ class Wa(Base):
                                                           oldest_due_date=timezone.localdate() - timedelta(days=45))
         self.l2.refresh_from_db()
         WhatsappTemplate.objects.filter(key="wa_overdue").update(header_image_url=IMG)
-        p = mock.patch("messaging.service.in_window", return_value=True)
-        p.start()
-        self.addCleanup(p.stop)
+        # WhatsApp sending imports in_window by name, so it has to be switched off in both modules.
+        for target in ("messaging.service.in_window", "messaging.whatsapp.in_window"):
+            p = mock.patch(target, return_value=True)
+            p.start()
+            self.addCleanup(p.stop)
 
     def post(self, user, path, body):
         return self.api(user).post(f"/api/messaging/whatsapp/{path}", body, format="json")
