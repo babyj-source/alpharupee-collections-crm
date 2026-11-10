@@ -142,6 +142,20 @@ def provision_outcomes(client):
             if "already" not in str(exc).lower():      # "name/code already taken": it was made by hand in Smartflo, which is fine
                 raise
     after = client.list_disposition_lists() if added else existing
+    # The list reply does not show each outcome's id, but Smartflo's guide has a call that does: read the outcomes of our list.
+    found_via = ""
+    try:
+        reader = getattr(client, "list_disposition_statuses", None)
+        if reader:
+            statuses = reader(list_id)
+            after = {"lists": after, "statuses": statuses}
+            found_via = "Read the outcomes' ids from Smartflo's outcome list."
+    except SmartfloError as exc:
+        steps.append(f"Could not read the outcome ids from Smartflo ({str(exc)[:160]}).")
+    except Exception:
+        pass
+    if found_via:
+        steps.append(found_via)
     mapped = 0
     for code, (label, _g, _s) in DISPOSITIONS.items():
         name, plain = smartflo_outcome(code)
@@ -161,8 +175,9 @@ def provision_outcomes(client):
     steps.append(f"Added {added} outcome(s); saved Smartflo ids for {mapped} of {len(DISPOSITIONS)}.")
     if missing:
         keys = sorted({k for d in list(walk_dicts(after))[:6] for k in d})
-        steps.append("Smartflo does not show the outcomes' ids in its list reply (it shows: " + ", ".join(keys) + "). The CRM keeps the short codes "
-                     "and will report each outcome to Smartflo by its code. If Smartflo refuses that, type the numeric ids in the table.")
+        steps.append("Smartflo does not show the outcomes' ids in its list reply (it shows: " + ", ".join(keys) + "). Smartflo needs each outcome's NUMBER "
+                     "when the CRM reports a call's outcome, so type the numbers in the table (Smartflo: Select an Action, open the outcome and "
+                     "read the number in its address), or ask Smartflo for them.")
     return {"list_id": list_id, "steps": steps, "mapped": mapped, "missing": missing}
 
 

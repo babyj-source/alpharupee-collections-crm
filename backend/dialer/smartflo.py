@@ -175,6 +175,12 @@ class SmartfloClient:
         return self._call("POST", "/v1/dialer/disposition_list", settings.SMARTFLO_API_TOKEN, bearer=True,
                           json={"name": name, "description": description, "status": True})
 
+    def list_disposition_statuses(self, list_id):
+        """The outcomes inside one list, WITH their ids (Smartflo's dialler guide: get-disposition-status/<list id>). The list call
+        above does not show them. Same host and token as campaign create; the token is tried both ways."""
+        return self._call("GET", f"/v1/outbound-dialer/get-disposition-status/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
+                          base=settings.SMARTFLO_CLOUDPHONE_BASE)
+
     def add_disposition_status(self, list_id, name, code):
         return self._call("POST", "/v1/dialer/disposition_status", settings.SMARTFLO_API_TOKEN, bearer=True,
                           json={"name": name, "code": code, "dispositionList": str(list_id)})

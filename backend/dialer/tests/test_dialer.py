@@ -476,7 +476,7 @@ class SessionTests(DialerBase):
         self.api(self.a1).get("/api/dialer/session")
         r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"}).json()
         self.assertFalse(r["released"])
-        self.assertIn("no Smartflo disposition", r["warning"])
+        self.assertIn("has no number", r["warning"])
         self.assertEqual(Activity.objects.filter(loan=self.l1, kind="disposition").count(), 1)
         DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="555")
         self.fake.fail = {"disposition": SmartfloError("Smartflo refused the request (500).")}

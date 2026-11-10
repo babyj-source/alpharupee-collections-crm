@@ -99,3 +99,13 @@ UAT, 2026-11-10: the outcome was saved in the CRM but Smartflo answered 401 "Una
 Cause: the outcome call sent the agent's token plain, while every other agent call (session create, session call, logout) sends it as `Bearer <token>`. The "try the other form" fallback only ran when Smartflo's message contained the word "token", and this one says "Unauthenticated user".
 
 Fix: the outcome call (and token refresh) now sends `Bearer` first; a 401 saying "token" or "unauthenticated" is retried once in the other form and the form that works is remembered. Sign-in is never retried (Smartflo locks a login after too many attempts). Saved-but-unreported outcomes are passed on automatically by the Dialer screen (every 15 s), so an outcome already saved needs no re-entry once this is deployed.
+
+## Follow-up: "disposition_status must be a number" (400)
+
+UAT, 2026-11-10, after the Bearer fix: Smartflo now accepts the sign-in but answers 400 `{'disposition_status': 'disposition_status must be a number'}`. The outcome call takes only the outcome's NUMERIC id (Smartflo's own example sends "71296"); the short codes (cback, noans, ...) are not accepted there.
+
+Changes:
+- The CRM no longer sends a short code in place of the number. With no numeric id it says so ("Smartflo has no number for ... yet").
+- "Create outcomes / Re-check outcomes in Smartflo" now also reads each outcome's id with the dialler guide's `GET /v1/outbound-dialer/get-disposition-status/<list id>` (cloudphone host, account token tried as Bearer then plain). Ids found are saved against each CRM outcome. If that call is refused, the message says so and the ids can be typed in (Campaigns, Setup, Call outcomes, column "Smartflo outcome number").
+- A saved outcome that is still owed to Smartflo triggers that lookup by itself, at most once every 5 minutes, and is then passed on automatically.
+- NOT verified against Smartflo: the exact address of the outcome-list call (the guide gives it relative to its `liveBaseUrl`, which is not stated; the CRM assumes `.../api/v1/outbound-dialer/`).

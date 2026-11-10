@@ -742,7 +742,11 @@ def _retry_release(s, user):
     since = att.started_at if att else s.started_at
     code = (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, loan_id=s.last_loan_id, created_at__gte=since)
             .order_by("-created_at").values_list("disposition", flat=True).first())
-    if code and _status_id(code) and cache.add(f"dialer-release-{s.pk}", 1, 15):
+    if not code:
+        return
+    if not _status_id(code) and cache.add("dialer-outcome-ids-lookup", 1, 300):
+        _ensure_outcome_ids()                    # try to find the ids by itself, but not more often than every 5 minutes
+    if _status_id(code) and cache.add(f"dialer-release-{s.pk}", 1, 15):
         _release(s, code)
 
 
@@ -821,8 +825,9 @@ class SessionDismissView(APIView):
 def _status_id(code):
     """Smartflo's id for this outcome. If this outcome has none yet, borrow the id of a similar one (same group, then any 'Connected'
     outcome for a connected one, then any) so the agent is still released and the next customer is dialled. The CRM keeps the real outcome."""
-    maps = {m.crm_code: (m.smartflo_status_id or m.smartflo_code) for m in DispositionMap.objects.all() if m.smartflo_status_id or m.smartflo_code}
-    if maps.get(code):                  # its own id, or (when Smartflo gave no id) its own short code
+    # Smartflo takes only the NUMERIC id for an outcome ("disposition_status must be a number"), never the short code.
+    maps = {m.crm_code: str(m.smartflo_status_id).strip() for m in DispositionMap.objects.all() if str(m.smartflo_status_id).strip().isdigit()}
+    if maps.get(code):
         return maps[code]
     label, group, _st = DISPOSITIONS.get(code, ("", "", None))
     for pick in (lambda c: DISPOSITIONS[c][1] == group,
@@ -836,21 +841,24 @@ def _status_id(code):
 
 def _ensure_outcome_ids():
     """No outcome has a Smartflo id yet (nobody ran Campaigns, Setup, Call outcomes). Make or find the 'CRM call outcomes' list in Smartflo and
-    save every id, so the agent is not stuck. Safe to repeat: it finds what already exists."""
+    save every id, so the agent is not stuck. Safe to repeat: it finds what already exists. Returns a short note about what went wrong, if anything."""
     try:
-        smartflo_setup.provision_outcomes(get_client())
-    except Exception:       # never let set-up trouble hide the real message
-        pass
+        res = smartflo_setup.provision_outcomes(get_client())
+        return " ".join(x for x in res.get("steps", []) if "Could not read" in x or "does not show" in x)[:400]
+    except Exception as exc:       # never let set-up trouble hide the real message
+        return str(exc)[:200]
 
 
 def _release(s, code):
     """Tell Smartflo the outcome of the last call. Returns (ok, warning)."""
     sid = _status_id(code)
+    note = ""
     if not sid:
-        _ensure_outcome_ids()
+        note = _ensure_outcome_ids()
         sid = _status_id(code)
     if not sid:
-        return False, f"Saved in the CRM, but no Smartflo disposition is set for “{DISPOSITION_LABELS.get(code, code)}”, so the dialler was not told."
+        return False, (f"Saved in the CRM, but Smartflo has no number for “{DISPOSITION_LABELS.get(code, code)}” yet, so the dialler was not told. "
+                       f"An Admin must enter the outcome numbers under Campaigns, Setup, Call outcomes. {note}").strip()
     try:
         get_client().disposition(unseal(s.token_enc), s.last_unique_id, sid)
     except SmartfloError as exc:
