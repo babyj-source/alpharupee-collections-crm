@@ -109,3 +109,18 @@ Changes:
 - "Create outcomes / Re-check outcomes in Smartflo" now also reads each outcome's id with the dialler guide's `GET /v1/outbound-dialer/get-disposition-status/<list id>` (cloudphone host, account token tried as Bearer then plain). Ids found are saved against each CRM outcome. If that call is refused, the message says so and the ids can be typed in (Campaigns, Setup, Call outcomes, column "Smartflo outcome number").
 - A saved outcome that is still owed to Smartflo triggers that lookup by itself, at most once every 5 minutes, and is then passed on automatically.
 - NOT verified against Smartflo: the exact address of the outcome-list call (the guide gives it relative to its `liveBaseUrl`, which is not stated; the CRM assumes `.../api/v1/outbound-dialer/`).
+
+## Follow-up: the outcome goes to the call it belongs to (2026-11-11)
+
+Seen on UAT: Smartflo rang the next customer one second after a call ended, before the agent could save the outcome. The CRM then sent the
+earlier customer's outcome with the *live* call's id, and Smartflo answered 422 "Please enter a valid call id record" (a call still in
+progress has no finished record). The call ids themselves match Smartflo's `call_id` exactly.
+
+Now each answered call is an attempt with an `outcome_sent` flag. Saving an outcome for a customer sends it for that customer's latest
+answered call that Smartflo has not been told about, whichever call is live. A newer live call keeps its own pending outcome. Outcomes
+refused or waiting for a Smartflo number are retried by the Dialer screen's poll (every 45 seconds per call, for calls from the last 30 minutes).
+Migration `dialer.0007_dial_attempt_outcome_sent`.
+
+Also check in Smartflo: the campaign's wrap-up (after-call) time. With none, Smartflo moves on at once and the agent writes up each
+outcome while already on the next call. The CRM's defaults ask for 60 seconds (`auto_disposition_cancel_duration`), but a campaign made earlier
+may not have it.

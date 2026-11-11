@@ -734,20 +734,19 @@ def _queue_rows(s, user, queue, attempts):
 
 
 def _retry_release(s, user):
-    """The agent already saved the outcome in the CRM but Smartflo was not told (no Smartflo id for it then). Once an id exists, tell
+    """The agent already saved an outcome in the CRM but Smartflo was not told (no Smartflo id for it then). Once an id exists, tell
     Smartflo now, so the agent does not have to save the outcome again. Makes no call to Smartflo while there is still no id."""
-    if not (s.last_unique_id and s.last_loan_id and not s.released):
-        return
-    att = DialAttempt.objects.filter(session=s, call_id=s.last_unique_id).first()
-    since = att.started_at if att else s.started_at
-    code = (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, loan_id=s.last_loan_id, created_at__gte=since)
-            .order_by("-created_at").values_list("disposition", flat=True).first())
-    if not code:
-        return
-    if not _status_id(code) and cache.add("dialer-outcome-ids-lookup", 1, 300):
-        _ensure_outcome_ids()                    # try to find the ids by itself, but not more often than every 5 minutes
-    if _status_id(code) and cache.add(f"dialer-release-{s.pk}", 1, 15):
-        _release(s, code)
+    recent = timezone.now() - timedelta(minutes=30)       # older ones are left alone: a call refused for good must not be retried all day
+    pending = list(DialAttempt.objects.filter(session=s, connected_at__isnull=False, outcome_sent=False, started_at__gte=recent).exclude(loan=None))
+    for att in pending:
+        code = (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, loan_id=att.loan_id, created_at__gte=att.started_at)
+                .order_by("-created_at").values_list("disposition", flat=True).first())
+        if not code:
+            continue
+        if not _status_id(code) and cache.add("dialer-outcome-ids-lookup", 1, 300):
+            _ensure_outcome_ids()                    # try to find the ids by itself, but not more often than every 5 minutes
+        if _status_id(code) and cache.add(f"dialer-release-{s.pk}-{att.pk}", 1, 45):
+            _release(s, code, att)
 
 
 class SessionView(APIView):
@@ -849,8 +848,15 @@ def _ensure_outcome_ids():
         return str(exc)[:200]
 
 
-def _release(s, code):
-    """Tell Smartflo the outcome of the last call. Returns (ok, warning)."""
+def _pending_attempt(s, loan_id):
+    """The call this customer's outcome belongs to: the latest answered call to them in this session that Smartflo has not been told about.
+    Smartflo can dial the next customer the moment a call ends, so the live call is not necessarily the one the agent is writing up."""
+    return (DialAttempt.objects.filter(session=s, loan_id=loan_id, connected_at__isnull=False, outcome_sent=False)
+            .order_by("-started_at", "-id").first())
+
+
+def _release(s, code, att=None):
+    """Tell Smartflo the outcome of one call (`att`, else the session's last call). Returns (ok, warning)."""
     sid = _status_id(code)
     note = ""
     if not sid:
@@ -859,12 +865,19 @@ def _release(s, code):
     if not sid:
         return False, (f"Saved in the CRM, but Smartflo has no number for “{DISPOSITION_LABELS.get(code, code)}” yet, so the dialler was not told. "
                        f"An Admin must enter the outcome numbers under Campaigns, Setup, Call outcomes. {note}").strip()
+    call_id = att.call_id if att else s.last_unique_id
     try:
-        get_client().disposition(unseal(s.token_enc), s.last_unique_id, sid)
+        get_client().disposition(unseal(s.token_enc), call_id, sid)
     except SmartfloError as exc:
         return False, f"Saved in the CRM, but Smartflo did not take the outcome. {exc}"
-    s.released = True
-    s.save(update_fields=["released"])
+    if att is None:
+        att = DialAttempt.objects.filter(session=s, call_id=call_id).first()
+    if att and not att.outcome_sent:
+        att.outcome_sent = True
+        att.save(update_fields=["outcome_sent"])
+    if call_id == s.last_unique_id:             # an older call written up while a newer one is live must not clear the newer call's pending state
+        s.released = True
+        s.save(update_fields=["released"])
     return True, ""
 
 
@@ -880,8 +893,12 @@ class SessionOutcomeView(APIView):
             return resp
         s, _ = current_session(request.user)
         released, warning = True, ""
-        if s and s.last_unique_id and not s.released:
-            released, warning = _release(s, request.data.get("code"))
+        if s:
+            att = _pending_attempt(s, pk)
+            if att:
+                released, warning = _release(s, request.data.get("code"), att)
+            elif s.last_unique_id and not s.released and s.last_loan_id in (None, pk):
+                released, warning = _release(s, request.data.get("code"))
         return Response({"loan": resp.data, "released": released, "warning": warning})
 
 
@@ -893,7 +910,11 @@ class SessionReleaseView(APIView):
         code = request.data.get("code")
         if not s or not s.last_unique_id or code not in DISPOSITIONS:
             return bad("Nothing to release.")
-        ok, warning = _release(s, code)
+        try:
+            loan_id = int(request.data.get("loan") or s.last_loan_id or 0)
+        except (TypeError, ValueError):
+            loan_id = 0
+        ok, warning = _release(s, code, _pending_attempt(s, loan_id) if loan_id else None)
         return Response({"released": ok, "warning": warning})
 
 
