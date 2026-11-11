@@ -2,6 +2,8 @@ import hmac
 import json
 from datetime import timedelta
 
+from django.http import HttpResponse, HttpResponseNotFound
+
 from django.conf import settings
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -10,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -21,9 +24,10 @@ from loans.models import Activity
 from loans.phones import normalise_mobile
 from loans.views import scoped
 
-from .models import MessageLog, SmsTemplate, WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
+from . import media
+from .models import MessageLog, SmsTemplate, WhatsappMedia, WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
 from .service import SendRefused, preview_sms, send_sms_for_loan
-from .whatsapp import handle_webhook, log_webhook, preview_whatsapp, send_chat_text, send_whatsapp_for_loan, session_open
+from .whatsapp import handle_webhook, log_webhook, preview_whatsapp, send_chat_attachment, send_chat_text, send_whatsapp_for_loan, session_open
 
 
 class TemplateSerializer(serializers.ModelSerializer):
@@ -160,8 +164,13 @@ class PreviewView(APIView):
 
 # ---------------------------------------------------------------------------------------------------------------- WhatsApp
 def _wa_row(m):
-    return {"id": m.pk, "direction": m.direction, "kind": m.kind, "text": m.text, "state": m.state, "error": m.error,
-            "by": (m.sent_by.name if m.sent_by else "") if m.direction == "out" else "Customer", "at": m.created_at}
+    row = {"id": m.pk, "direction": m.direction, "kind": m.kind, "text": m.text, "state": m.state, "error": m.error,
+           "by": (m.sent_by.name if m.sent_by else "") if m.direction == "out" else "Customer", "at": m.created_at}
+    if m.media_type:
+        # The browser loads the file from /media/<id> with the user's own login; "ready" says whether the CRM holds the bytes yet.
+        row["media"] = {"type": m.media_type, "name": m.media_name, "mime": m.media_mime, "label": media.label_for(m.media_type),
+                        "url": f"/api/messaging/whatsapp/media/{m.pk}", "ready": bool(m.media_url or m.direction == "out" or m.media_mime)}
+    return row
 
 
 def _loan_arg(request, data=None):
@@ -207,10 +216,12 @@ class WhatsappSendView(APIView):
 
 
 class ChatView(APIView):
-    """The WhatsApp conversation on one account. Opening it marks the customer's messages as read."""
+    """The WhatsApp conversation on one account. Opening it marks the customer's messages as read. POST sends free text (JSON) or an
+    attachment (multipart: loan, file, text = the caption)."""
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "whatsapp"
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get(self, request):
         loan = _loan_arg(request)
@@ -226,11 +237,16 @@ class ChatView(APIView):
         loan = _loan_arg(request, request.data)
         if loan is None:
             return Response({"detail": "Give the loan id."}, status=status.HTTP_400_BAD_REQUEST)
+        upload = request.FILES.get("file")
         try:
-            m = send_chat_text(loan, request.user, request.data.get("text"))
+            if upload is not None:
+                m = send_chat_attachment(loan, request.user, upload, request.data.get("text"), request.build_absolute_uri("/"))
+            else:
+                m = send_chat_text(loan, request.user, request.data.get("text"))
         except SendRefused as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        audit(request, "whatsapp_chat_sent" if m.state == "sent" else "whatsapp_chat_failed", user=request.user, object_type="loan", object_id=loan.pk)
+        audit(request, "whatsapp_chat_sent" if m.state == "sent" else "whatsapp_chat_failed", user=request.user, object_type="loan", object_id=loan.pk,
+              detail=f"{m.media_type}: {m.media_name}" if m.media_type else "")
         if m.state != "sent":
             return Response({"detail": f"MSG91 did not accept the message. {m.error}", "message": _wa_row(m)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(_wa_row(m), status=status.HTTP_201_CREATED)
@@ -247,11 +263,58 @@ class InboxView(APIView):
             row = seen.get(m.loan_id)
             if row is None:
                 row = seen[m.loan_id] = {"loan_id": m.loan_id, "account_id": m.loan.account_id, "borrower_name": m.loan.borrower_name,
-                                         "last_text": m.text[:120], "last_direction": m.direction, "last_at": m.created_at, "unread": 0}
+                                         "last_text": (m.text or (media.label_for(m.media_type) if m.media_type else ""))[:120], "last_direction": m.direction, "last_at": m.created_at, "unread": 0}
                 out.append(row)
             if m.direction == "in" and not m.seen:
                 row["unread"] += 1
         return Response(out[:100])
+
+
+def _file_response(m):
+    """The stored file of one message. Shown in the page only when it is a kind the browser cannot run; anything else downloads."""
+    row = WhatsappMedia.objects.filter(message=m).first()
+    if row is None and m.direction == "in":
+        try:
+            media.fetch_inbound(m)
+        except Exception:
+            pass
+        row = WhatsappMedia.objects.filter(message=m).first()
+    if row is None:
+        return None
+    mime = (m.media_mime or "application/octet-stream").lower()
+    inline = mime in media.INLINE_OK
+    resp = HttpResponse(bytes(row.content), content_type=mime if inline else "application/octet-stream")
+    name = media.clean_name(m.media_name or "file")
+    resp["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{name}"'
+    if mime != "application/pdf":       # the browser's PDF viewer does not run inside a sandbox; nothing else here can run anything anyway
+        resp["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; media-src 'self'"
+    resp["Cache-Control"] = "private, max-age=3600"
+    return resp
+
+
+class WhatsappMediaView(APIView):
+    """A photo or document in a conversation, for the signed-in user who can see that account."""
+
+    def get(self, request, pk):
+        m = WhatsappMessage.objects.filter(pk=pk).exclude(media_type="").first()
+        if m is None or m.loan_id is None:
+            return HttpResponseNotFound()
+        if not scoped(request.user, grants=True).filter(pk=m.loan_id).exists():
+            return HttpResponseNotFound()
+        return _file_response(m) or HttpResponseNotFound()
+
+
+class WhatsappMediaPublicView(APIView):
+    """The address MSG91 fetches an outgoing attachment from. No login; the link carries a signature for this one file and expires."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        if not media.link_is_valid(pk, request.query_params.get("t", "")):
+            return HttpResponseNotFound()
+        m = WhatsappMessage.objects.filter(pk=pk, direction="out").exclude(media_type="").first()
+        return (m and _file_response(m)) or HttpResponseNotFound()
 
 
 @method_decorator(csrf_exempt, name="dispatch")

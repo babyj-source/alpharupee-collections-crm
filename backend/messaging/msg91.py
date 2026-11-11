@@ -122,6 +122,30 @@ def send_whatsapp_text(mobile, text):
     return _wa_post(settings.MSG91_WHATSAPP_TEXT_URL, body)
 
 
+def send_whatsapp_media(mobile, media_type, link, caption="", filename=""):
+    """A picture or document inside the 24-hour window. `link` is a public https address MSG91 fetches the file from.
+    NOT checked against MSG91's documentation: the first shape is WhatsApp Cloud API style (`image: {link, caption}`); if MSG91 refuses
+    it with a 4xx, the flat shape (`media_url`) is tried once. The reply MSG91 gives is kept on the message so a wrong shape shows up."""
+    inner = {"link": link}
+    if caption:
+        inner["caption"] = caption
+    if media_type == "document" and filename:
+        inner["filename"] = filename
+    base = {"integrated_number": settings.MSG91_WHATSAPP_NUMBER, "recipient_number": mobile, "content_type": media_type}
+    flat = dict(base, media_url=link, url=link)
+    if caption:
+        flat["caption"] = caption
+    if filename:
+        flat["filename"] = filename
+    try:
+        return _wa_post(settings.MSG91_WHATSAPP_MEDIA_URL or settings.MSG91_WHATSAPP_TEXT_URL, dict(base, **{media_type: inner}))
+    except Msg91Error as first:
+        if not str(first).startswith("MSG91 refused (HTTP 4"):
+            raise
+        log.warning("MSG91 refused the nested media shape (%s); trying the flat one", first)
+        return _wa_post(settings.MSG91_WHATSAPP_MEDIA_URL or settings.MSG91_WHATSAPP_TEXT_URL, flat)
+
+
 def set_whatsapp_call_settings(enabled, call_hours=None):
     """MSG91 'WhatsApp Voice Call' settings: switch calling on or off for the business number. Returns (HTTP status, MSG91's message).
     Settings only: MSG91 documents no endpoint that places a call. The body is from the doc plus `integrated_number`, which the
