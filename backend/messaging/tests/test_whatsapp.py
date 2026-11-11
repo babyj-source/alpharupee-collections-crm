@@ -396,3 +396,24 @@ class AttachmentSendTests(Wa):
             r = self.up(self.a2)
         self.assertEqual(r.status_code, 502)
         self.assertEqual(WhatsappMessage.objects.get(direction="out").state, "failed")
+
+
+@ON
+class RebuildTests(Wa):
+    def test_old_placeholders_are_re_read_from_the_log(self):
+        from django.core.management import call_command
+        from io import StringIO
+        from messaging.whatsapp import _mask
+        old = WhatsappMessage.objects.create(loan=self.l2, direction="in", kind="media", text="[button]", state="received", provider_ref="b-77", mobile_last4="2222")
+        gone = WhatsappMessage.objects.create(loan=self.l2, direction="in", kind="media", text="[button]", state="received", provider_ref="b-78", mobile_last4="2222")
+        body = {"customerNumber": "919222222222", "contentType": "button", "uuid": "b-77", "button": json.dumps({"text": "Pay now"})}
+        WhatsappWebhookLog.objects.create(body=_mask(json.dumps(body)), handled="inbound")
+        out = StringIO()
+        call_command("rebuild_whatsapp_messages", stdout=out)
+        old.refresh_from_db()
+        self.assertEqual(old.text, "[button]")                                  # dry run changes nothing
+        call_command("rebuild_whatsapp_messages", "--apply", stdout=out)
+        old.refresh_from_db()
+        gone.refresh_from_db()
+        self.assertEqual((old.kind, old.text, gone.text), ("button", "Pay now", "[button]"))
+        self.assertIn("1 can be read now, 1 have no webhook body", out.getvalue())

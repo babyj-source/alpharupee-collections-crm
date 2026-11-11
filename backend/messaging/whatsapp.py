@@ -186,6 +186,24 @@ def _loan_for(number):
     return recent.loan if recent else qs.order_by("-dpd", "-id").first()
 
 
+def parse_inbound(payload):
+    """What a customer message is, from an MSG91 webhook body that has been through media.expand(): (kind, text, file or None)."""
+    ctype = str(msg91._find(payload, ("contentType", "content_type", "type")) or "").lower()
+    file = None
+    if ctype in media.MEDIA_TYPES or ctype in ("", "media", "file", "attachment", "message"):
+        file = media.inbound_media(payload, ctype)
+    kind, text = "text", ""
+    if file:
+        kind, text = "media", file["caption"]
+    elif ctype in ("button", "interactive", "button_reply", "list_reply", "quick_reply") or (ctype not in ("", "text", "template") and media.button_text(payload)):
+        kind, text = "button", media.button_text(payload) or _text_of(payload) or "Tapped a button"
+    elif ctype in ("", "text", "template"):
+        text = _text_of(payload)
+    else:
+        kind, text = "media", media.other_text(payload, ctype)
+    return kind, text, file
+
+
 def handle_webhook(payload):
     """Apply one MSG91 webhook body. Returns a short label for the log: inbound, status, ignored."""
     payload = media.expand(payload)
@@ -201,19 +219,7 @@ def handle_webhook(payload):
     if direction in ("out", "outgoing", "outbound"):
         return "ignored"
     number = msg91._find(payload, _NUMBER_KEYS)
-    ctype = str(msg91._find(payload, ("contentType", "content_type", "type")) or "").lower()
-    file = None
-    if ctype in media.MEDIA_TYPES or ctype in ("", "media", "file", "attachment", "message"):
-        file = media.inbound_media(payload, ctype)
-    kind, text = "text", ""
-    if file:
-        kind, text = "media", file["caption"]
-    elif ctype in ("button", "interactive", "button_reply", "list_reply", "quick_reply") or (ctype not in ("", "text", "template") and media.button_text(payload)):
-        kind, text = "button", media.button_text(payload) or _text_of(payload) or "Tapped a button"
-    elif ctype in ("", "text", "template"):
-        text = _text_of(payload)
-    else:
-        kind, text = "media", media.other_text(payload, ctype)
+    kind, text, file = parse_inbound(payload)
     if number and (text or file):
         loan = _loan_for(number)
         last4 = re.sub(r"\D", "", str(number))[-4:]
