@@ -671,9 +671,29 @@ def _live_for_agent(s, user, profile, queue):
     return calls, unparsed or more, ("account" if calls else "none"), warning if not calls else ""
 
 
-def _track_attempts(s, calls, queue, now):
-    """Remember each call Smartflo makes for this session, and when it connected and ended. A call that ended without ever connecting
-    needs no outcome, so the agent is not held up."""
+AUTO_NOANSWER_SECONDS = int(getattr(settings, "DIALER_AUTO_NOANSWER_SECONDS", 20))
+
+
+def _auto_no_answer(s, att, reason):
+    """A call that ended with nobody to talk to: note "No answer" on the customer's timeline by itself, so the agent is not asked for an
+    outcome. Only the timeline and the last-outcome fields change (never the CRM status or a promise), and only once per call, and not
+    if the agent already saved an outcome for it."""
+    loan = att.loan
+    if loan is None or att.outcome_sent:
+        return False
+    if Activity.objects.filter(kind=Activity.Kind.DISPOSITION, loan=loan, user=s.user, created_at__gte=att.started_at).exists():
+        return False
+    now = timezone.now()
+    Activity.objects.create(loan=loan, user=s.user, kind=Activity.Kind.DISPOSITION, disposition="no_answer", detail=f"Automatic: {reason}"[:300])
+    Loan.objects.filter(pk=loan.pk).update(last_disposition="no_answer", last_disposition_at=now)
+    audit(None, "disposition_auto", user=s.user, object_type="loan", object_id=loan.pk, detail=f"no_answer: {reason}"[:200])
+    return True
+
+
+def _track_attempts(s, calls, queue, now, reliable=True):
+    """Remember each call Smartflo makes for this session, and when it connected and ended. A call that ended without ever connecting, or
+    that the customer cut within AUTO_NOANSWER_SECONDS of being answered, is noted as "No answer" by itself (and Smartflo is told), so
+    the agent is not held up. `reliable` is False when Smartflo's live list could not be read: then nothing is treated as ended."""
     by_number = {}
     for loan in queue:
         for x in (loan.borrower_mobile, loan.alt_mobile):
@@ -695,19 +715,34 @@ def _track_attempts(s, calls, queue, now):
             att.connected_at = att.connected_at or now
         att.last_seen_at = now
         att.save()
-    for att in DialAttempt.objects.filter(session=s).exclude(state="ended").exclude(call_id__in=live_ids):
+    if not reliable:
+        return
+    for att in DialAttempt.objects.filter(session=s).exclude(state="ended").exclude(call_id__in=live_ids).select_related("loan"):
         att.state, att.ended_at = "ended", now
         att.save(update_fields=["state", "ended_at"])
-        if att.connected_at is None and s.last_unique_id == att.call_id and not s.released:
-            s.released = True
-            s.save(update_fields=["released"])
+        if att.connected_at is None:
+            _auto_no_answer(s, att, "the customer did not answer")
+            att.outcome_sent = True                      # nothing was said, so Smartflo needs no outcome for it
+            att.save(update_fields=["outcome_sent"])
+            if s.last_unique_id == att.call_id and not s.released:
+                s.released = True
+                s.save(update_fields=["released"])
+            continue
+        talked = int(((att.last_seen_at or now) - att.connected_at).total_seconds())
+        if AUTO_NOANSWER_SECONDS and talked < AUTO_NOANSWER_SECONDS and _auto_no_answer(
+                s, att, f"the call lasted only {talked} seconds after it was answered, so the customer did not speak"):
+            _release(s, "no_answer", att)               # tell Smartflo too; if it refuses, the screen's poll tries again
 
 
 def _queue_rows(s, user, queue, attempts):
-    outcomes = {}
+    outcomes, autos = {}, set()
     for a in Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, created_at__gte=s.started_at,
                                      loan_id__in=[l.pk for l in queue]).order_by("created_at"):
         outcomes[a.loan_id] = a.disposition
+        if a.detail.startswith("Automatic:"):
+            autos.add(a.loan_id)
+        else:
+            autos.discard(a.loan_id)
     per_loan = {}
     for att in attempts:
         per_loan.setdefault(att.loan_id, []).append(att)
@@ -720,7 +755,7 @@ def _queue_rows(s, user, queue, attempts):
         elif latest and latest.state == "ringing":
             code, text = "calling", "Calling now"
         elif loan.pk in outcomes:
-            code, text = "done", DISPOSITION_LABELS.get(outcomes[loan.pk], "Outcome saved")
+            code, text = "done", DISPOSITION_LABELS.get(outcomes[loan.pk], "Outcome saved") + (" (automatic)" if loan.pk in autos else "")
         elif latest and any(a.connected_at for a in mine):
             code, text = "outcome_pending", "Spoke · outcome not saved"
         elif latest:
@@ -783,7 +818,7 @@ class SessionView(APIView):
                 _grant(request.user, matches)
             out["call"] = {"state": call["state"], "phase": call_phase(call["state"]), "seconds": call["seconds"]}
             out["candidates"] = [{"id": m.pk, "account_id": m.account_id, "borrower_name": m.borrower_name} for m in matches] if len(matches) > 1 else []
-        _track_attempts(s, calls, queue, now)
+        _track_attempts(s, calls, queue, now, reliable=not warning)
         _retry_release(s, request.user)
         s.refresh_from_db(fields=["released"])
         attempts = list(DialAttempt.objects.filter(session=s).select_related("loan"))

@@ -124,3 +124,22 @@ Migration `dialer.0007_dial_attempt_outcome_sent`.
 Also check in Smartflo: the campaign's wrap-up (after-call) time. With none, Smartflo moves on at once and the agent writes up each
 outcome while already on the next call. The CRM's defaults ask for 60 seconds (`auto_disposition_cancel_duration`), but a campaign made earlier
 may not have it.
+
+## Follow-up: the CRM follows what Smartflo does with a call (2026-11-11)
+
+Tested on UAT: when the customer cut a call, or never picked up, the CRM still asked the agent for an outcome, and Smartflo moved on at once.
+The CRM now reads the end of every dialler call from Smartflo's live list (the Dialer screen polls every few seconds) and acts on it:
+
+- **Nobody answered** (the call left the live list without ever being answered): "No answer" is noted on the customer's timeline by
+  itself ("Automatic: the customer did not answer"). No outcome is asked for, and Smartflo is told nothing (it already marked the call).
+- **Answered, but the customer cut it within `DIALER_AUTO_NOANSWER_SECONDS` (default 20)**: the same note ("the call lasted only N
+  seconds ... so the customer did not speak"), and the outcome "No answer" is sent to Smartflo for that call so the agent is freed. If
+  Smartflo refuses it, the screen's poll tries again. 0 switches this off.
+- Only the timeline and the customer's last-outcome fields change. The CRM status, call-back time and promises are never touched by an
+  automatic note. If the agent saves an outcome first, nothing is added. If the customer did speak, the agent can still save the real outcome
+  afterwards; it replaces the note in the CRM, and Smartflo is not told twice.
+- Nothing is treated as ended while Smartflo's live list cannot be read (a failed read is not a hang-up).
+- The campaign table shows "No answer (automatic)".
+- **CRM to Smartflo:** the Dialer screen's End call button hangs up through Smartflo's `/v1/call/hangup` (verified for click-to-call). Calls Smartflo
+  places for the dialler are the same call ids, but this has not been tested on UAT for a dialler call yet.
+- Limits: the CRM only sees a call while the agent's Dialer screen is open. Smartflo does not say who hung up; a short call is the signal.
