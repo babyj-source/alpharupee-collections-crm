@@ -149,6 +149,9 @@ SMARTFLO_CLICK_TO_CALL_TYPE = env("SMARTFLO_CLICK_TO_CALL_TYPE", "")
 # The number the customer sees (Smartflo's "caller_id", the account's outgoing number) and how long Smartflo waits for the agent, in seconds.
 SMARTFLO_CALLER_ID = env("SMARTFLO_CALLER_ID", "")
 SMARTFLO_CALL_TIMEOUT = int(env("SMARTFLO_CALL_TIMEOUT", "300"))
+# A dialler call the customer cuts within this many seconds of answering is noted as "No answer" by itself, and Smartflo is told, so the
+# agent is not asked for an outcome nobody could give. 0 switches it off.
+DIALER_AUTO_NOANSWER_SECONDS = int(env("DIALER_AUTO_NOANSWER_SECONDS", "20"))
 # Ends a live call from the agent screen. NOT yet checked against Smartflo's documentation: if Smartflo refuses it the agent
 # is told to end the call on the phone, and the path or body can be corrected here without a code change.
 SMARTFLO_HANGUP_PATH = env("SMARTFLO_HANGUP_PATH", "/v1/call/hangup")

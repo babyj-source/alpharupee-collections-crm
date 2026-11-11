@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+from loans.models import Activity
 from dialer.models import DialAttempt, DispositionMap, PushedLead
 from dialer.smartflo import SmartfloError
 from dialer.tests.test_dialer import DialerBase
@@ -17,6 +18,11 @@ class QueueTests(DialerBase):
 
     def poll(self):
         return self.api(self.a1).get("/api/dialer/session").json()
+
+    def talked(self, seconds):
+        """Pretend the live call has been up `seconds` already (the tests poll back to back)."""
+        now = timezone.now()
+        DialAttempt.objects.update(connected_at=now - timedelta(seconds=seconds + 1), last_seen_at=now - timedelta(seconds=1), started_at=now - timedelta(seconds=seconds + 5))
 
     def answered(self, number="9111111111", cid="c-1"):
         self.fake.live = {"data": [{"call_id": cid, "customer_number": number, "status": "answered", "call_time": "00:00:12"}]}
@@ -34,6 +40,7 @@ class QueueTests(DialerBase):
         self.answered()
         d = self.poll()
         self.assertEqual((d["queue"][0]["status"], d["call"]["phase"], d["log"][0]["result"]), ("on_call", "connected", "On a call"))
+        self.talked(60)
         self.fake.live = {"data": []}
         d = self.poll()
         self.assertEqual((d["queue"][0]["status"], d["awaiting_outcome"], d["log"][0]["result"][:5]), ("outcome_pending", True, "Spoke"))
@@ -47,7 +54,13 @@ class QueueTests(DialerBase):
         self.poll()
         self.fake.live = {"data": []}
         d = self.poll()
-        self.assertEqual((d["queue"][0]["status"], d["awaiting_outcome"], d["log"][0]["result"], d["queue"][0]["attempts"]), ("no_answer", False, "Not answered", 1))
+        self.assertEqual((d["queue"][0]["status"], d["queue"][0]["status_text"], d["awaiting_outcome"], d["log"][0]["result"], d["queue"][0]["attempts"]),
+                         ("done", "No answer (automatic)", False, "Not answered", 1))
+        a = Activity.objects.get(loan=self.l1, kind="disposition")
+        self.assertEqual((a.disposition, a.detail, a.user_id), ("no_answer", "Automatic: the customer did not answer", self.a1.pk))
+        self.l1.refresh_from_db()
+        self.assertEqual((self.l1.last_disposition, self.l1.crm_status), ("no_answer", "new"))        # the status and promises are left alone
+        self.assertEqual([c for c in self.fake.calls if c[0] == "disposition"], [])                     # Smartflo needs nothing for a call nobody answered
         self.fake.live = {"data": [{"call_id": "c-2", "customer_number": "9111111111", "status": "ringing"}]}
         d = self.poll()
         self.assertEqual((d["queue"][0]["status"], d["queue"][0]["attempts"], len(d["log"])), ("calling", 2, 2))
@@ -93,6 +106,56 @@ class QueueTests(DialerBase):
     def test_resend_needs_a_running_campaign(self):
         self.post(self.a1, "session/stop")
         self.assertEqual(self.post(self.a1, "session/resend").status_code, 400)
+
+    def test_a_call_the_customer_cuts_at_once_is_marked_no_answer_by_itself_and_smartflo_is_told(self):
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(8)                                           # answered, gone 8 seconds later
+        self.fake.live = {"data": []}
+        d = self.poll()
+        self.assertEqual((d["awaiting_outcome"], d["queue"][0]["status_text"]), (False, "No answer (automatic)"))
+        a = Activity.objects.get(loan=self.l1, kind="disposition")
+        self.assertIn("lasted only 8 seconds", a.detail)
+        self.assertEqual(self.fake.calls[-1], ("disposition", "agent-token", "c-1", "555"))
+        self.assertTrue(DialAttempt.objects.get().outcome_sent)
+        self.poll()
+        self.assertEqual(Activity.objects.filter(loan=self.l1, kind="disposition").count(), 1)          # once only
+        self.assertEqual(len([c for c in self.fake.calls if c[0] == "disposition"]), 1)
+
+    def test_a_real_conversation_is_not_marked_and_the_switch_can_be_turned_off(self):
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(45)
+        self.fake.live = {"data": []}
+        d = self.poll()
+        self.assertEqual((d["awaiting_outcome"], d["queue"][0]["status"]), (True, "outcome_pending"))
+        self.assertFalse(Activity.objects.filter(loan=self.l1, kind="disposition").exists())
+
+    def test_nothing_is_marked_when_smartflos_live_list_could_not_be_read(self):
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(5)
+        self.fake.fail = {"live_calls": SmartfloError("Smartflo refused the request (500).")}
+        d = self.poll()
+        self.assertFalse(Activity.objects.filter(loan=self.l1, kind="disposition").exists())            # a hiccup is not a hang-up
+        self.assertEqual(DialAttempt.objects.get().state, "connected")
+
+    def test_an_outcome_the_agent_saved_first_is_not_replaced_by_the_automatic_one(self):
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(6)
+        self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "wrong_number"})
+        self.fake.live = {"data": []}
+        self.poll()
+        self.assertEqual(list(Activity.objects.filter(loan=self.l1, kind="disposition").values_list("disposition", flat=True)), ["wrong_number"])
 
     def test_an_outcome_goes_to_the_call_it_belongs_to_even_when_the_next_call_is_already_live(self):
         """Smartflo can ring the next customer the second a call ends; the outcome the agent is writing is still for the earlier call."""
