@@ -302,8 +302,10 @@ class InboundFileTests(Wa):
         self.hook({"customerNumber": "919222222222", "contentType": "text", "uuid": "t-1", "text": json.dumps({"body": "Hello there"})})
         self.hook({"customerNumber": "919222222222", "contentType": "location", "uuid": "l-1", "location": {"latitude": 12.97, "longitude": 77.59}})
         self.hook({"customerNumber": "919222222222", "contentType": "sticker_pack", "uuid": "o-1"})
+        self.hook({"customerNumber": "919222222222", "contentType": "unsupported", "uuid": "o-2", "messages": json.dumps([{"unsupported": {"type": "album", "raw_type": "album"}}])})
         self.assertEqual([m.text for m in WhatsappMessage.objects.order_by("id")],
-                         ["Hello there", "Shared a location (12.97, 77.59)", "Sent a sticker_pack message that the CRM cannot show. Open it in WhatsApp."])
+                         ["Hello there", "Shared a location (12.97, 77.59)", "Sent a sticker_pack message that the CRM cannot show. Open it in WhatsApp.",
+                          "Sent an album that WhatsApp does not pass on. Open it in WhatsApp."])
 
     def test_inbox_names_a_photo_that_has_no_caption(self):
         with fetched():
@@ -415,5 +417,40 @@ class RebuildTests(Wa):
         call_command("rebuild_whatsapp_messages", "--apply", stdout=out)
         old.refresh_from_db()
         gone.refresh_from_db()
-        self.assertEqual((old.kind, old.text, gone.text), ("button", "Pay now", "[button]"))
+        self.assertEqual((old.kind, old.text, gone.text), ("button", "Pay now", "Tapped a button (the choice was not recorded)"))
         self.assertIn("1 can be read now, 1 have no webhook body", out.getvalue())
+
+
+@ON
+class RealShapeTests(Wa):
+    """Bodies as MSG91 really sends them on UAT (Nov 2026): flat fields, plus the Meta message as a JSON string in `messages`."""
+    URL = "/api/messaging/whatsapp/webhook?token=s3cret"
+
+    def test_photo_uses_msg91s_own_link_not_the_meta_one(self):
+        body = {"customerNumber": "919222222222", "uuid": "wamid.AAA_hello", "contentType": "image", "text": "", "caption": "", "filename": "",
+                "url": "https://whatsappstatus.phone91.com/whatsapp-haptik-media/918065075438/1234567890123456", "button": "", "interactive": "",
+                "messages": json.dumps([{"from": "919222222222", "id": "wamid.AAA", "type": "image", "image": {
+                    "mime_type": "image/jpeg", "id": "1234567890123456", "url": "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1"}}])}
+        with fetched(b"\xff\xd8\xff\xe0" + b"j" * 30, "image/jpeg") as dl:
+            self.api().post(self.URL, json.dumps(body), content_type="application/json")
+        dl.assert_called_once_with("https://whatsappstatus.phone91.com/whatsapp-haptik-media/918065075438/1234567890123456")
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.kind, m.media_type, m.media_mime, m.text), ("media", "image", "image/jpeg", ""))
+
+    def test_button_with_empty_siblings(self):
+        body = {"customerNumber": "919222222222", "uuid": "wamid.BBB_hello", "contentType": "button", "text": "", "caption": "", "url": "", "interactive": "",
+                "button": json.dumps({"payload": "Already paid", "text": "Already paid"}), "messageType": "button"}
+        self.api().post(self.URL, json.dumps(body), content_type="application/json")
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.kind, m.text, m.media_type), ("button", "Already paid", ""))
+
+    def test_rebuild_labels_what_it_cannot_recover(self):
+        from django.core.management import call_command
+        from io import StringIO
+        a = WhatsappMessage.objects.create(loan=self.l2, direction="in", kind="media", text="[button]", state="received", provider_ref="n-1")
+        b = WhatsappMessage.objects.create(loan=self.l2, direction="in", kind="media", text="[image]", state="received", provider_ref="n-2")
+        call_command("rebuild_whatsapp_messages", "--apply", stdout=StringIO())
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertEqual((a.kind, a.text), ("button", "Tapped a button (the choice was not recorded)"))
+        self.assertEqual((b.media_type, b.text, b.media_url), ("image", "", ""))

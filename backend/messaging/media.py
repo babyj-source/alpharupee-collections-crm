@@ -68,6 +68,10 @@ def inbound_media(payload, ctype):
         if ctype == t and not node:
             node = payload if isinstance(payload, dict) else {}
         url = _first(node, _URL_KEYS)
+        # MSG91 puts its own copy of the file in the top-level `url`; the nested link is WhatsApp's, which only opens with Meta's token.
+        top = payload.get("url") if isinstance(payload, dict) and ctype == t else None
+        if isinstance(top, str) and top.startswith("http"):
+            url = top
         if not (isinstance(url, str) and url.startswith("http")):
             url = ""
         mtype = "audio" if t == "voice" else t
@@ -109,6 +113,9 @@ def other_text(payload, ctype):
         return f"Reacted {v}" if v else "Reacted to a message"
     if ctype == "order":
         return "Sent an order"
+    if ctype == "unsupported":
+        raw = _first(msg91._find(payload, ("unsupported",)) or {}, ("raw_type", "type"))
+        return f"Sent {'an' if str(raw)[:1] in 'aeiou' else 'a'} {raw or 'message'} that WhatsApp does not pass on. Open it in WhatsApp."
     return f"Sent a {ctype or 'new kind of'} message that the CRM cannot show. Open it in WhatsApp."
 
 

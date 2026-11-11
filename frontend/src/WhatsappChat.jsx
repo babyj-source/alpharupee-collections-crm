@@ -24,7 +24,7 @@ function Media({ m }) {
   const x = m.media;
   const label = `${x.label}${x.name ? `: ${x.name}` : ""}`;
   if (!x.ready || bad) {
-    return <div className="media-missing">{label}<span className="muted small"> · {x.ready ? "could not be loaded" : "the file was not included by WhatsApp"}</span></div>;
+    return <div className="media-missing">{label}<span className="muted small"> · {x.ready ? "could not be loaded" : "the file is not available"}</span></div>;
   }
   if (x.type === "image" || x.type === "sticker") {
     return <a href={x.url} target="_blank" rel="noreferrer"><img className="bubble-img" src={x.url} alt={label} loading="lazy" onError={() => setBad(true)} /></a>;
