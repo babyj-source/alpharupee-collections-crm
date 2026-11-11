@@ -768,11 +768,16 @@ def _queue_rows(s, user, queue, attempts):
     return rows
 
 
+RELEASE_RETRY_SECONDS = 8   # how soon to try again when Smartflo refused an outcome for a call that has ended
+
+
 def _retry_release(s, user):
     """The agent already saved an outcome in the CRM but Smartflo was not told (no Smartflo id for it then). Once an id exists, tell
     Smartflo now, so the agent does not have to save the outcome again. Makes no call to Smartflo while there is still no id."""
     recent = timezone.now() - timedelta(minutes=30)       # older ones are left alone: a call refused for good must not be retried all day
-    pending = list(DialAttempt.objects.filter(session=s, connected_at__isnull=False, outcome_sent=False, started_at__gte=recent).exclude(loan=None))
+    # Only calls that have ended: Smartflo takes an outcome only for a finished call, and the moment the screen sees the end, this runs.
+    pending = list(DialAttempt.objects.filter(session=s, state="ended", connected_at__isnull=False, outcome_sent=False,
+                                              started_at__gte=recent).exclude(loan=None))
     for att in pending:
         code = (Activity.objects.filter(kind=Activity.Kind.DISPOSITION, user=user, loan_id=att.loan_id, created_at__gte=att.started_at)
                 .order_by("-created_at").values_list("disposition", flat=True).first())
@@ -780,7 +785,7 @@ def _retry_release(s, user):
             continue
         if not _status_id(code) and cache.add("dialer-outcome-ids-lookup", 1, 300):
             _ensure_outcome_ids()                    # try to find the ids by itself, but not more often than every 5 minutes
-        if _status_id(code) and cache.add(f"dialer-release-{s.pk}-{att.pk}", 1, 45):
+        if _status_id(code) and cache.add(f"dialer-release-{s.pk}-{att.pk}", 1, RELEASE_RETRY_SECONDS):
             _release(s, code, att)
 
 
@@ -930,7 +935,10 @@ class SessionOutcomeView(APIView):
         released, warning = True, ""
         if s:
             att = _pending_attempt(s, pk)
-            if att:
+            if att and att.state != "ended" and _status_id(request.data.get("code")):
+                # Still on the call: Smartflo takes an outcome only for a finished call. The screen's next check sends it the moment the call ends.
+                released, warning = False, "Outcome saved. Smartflo will be told as soon as the call ends."
+            elif att:
                 released, warning = _release(s, request.data.get("code"), att)
             elif s.last_unique_id and not s.released and s.last_loan_id in (None, pk):
                 released, warning = _release(s, request.data.get("code"))

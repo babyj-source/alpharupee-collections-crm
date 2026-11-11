@@ -188,6 +188,42 @@ class QueueTests(DialerBase):
         self.assertIn(("disposition", "agent-token", "old-call", "555"), self.fake.calls)
         self.assertTrue(DialAttempt.objects.get(call_id="old-call").outcome_sent)
 
+    def test_an_outcome_saved_during_the_call_is_sent_the_moment_the_call_ends_not_45_seconds_later(self):
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(60)
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"}).json()      # still on the call
+        self.assertFalse(r["released"])
+        self.assertIn("as soon as the call ends", r["warning"])
+        self.assertNotIn("disposition", [c[0] for c in self.fake.calls])                            # Smartflo takes none for a live call
+        self.poll()                                                                                   # still live: nothing sent, nothing locked
+        self.assertNotIn("disposition", [c[0] for c in self.fake.calls])
+        self.fake.live = {"data": []}
+        self.poll()                                                                                   # the very check that sees the end sends it
+        self.assertIn(("disposition", "agent-token", "c-1", "555"), self.fake.calls)
+        self.assertTrue(DialAttempt.objects.get(call_id="c-1").outcome_sent)
+
+    def test_a_refused_outcome_for_an_ended_call_is_tried_again_within_seconds(self):
+        from django.core.cache import cache
+        from dialer.views import RELEASE_RETRY_SECONDS
+        self.assertLessEqual(RELEASE_RETRY_SECONDS, 10)
+        self.live()
+        self.poll()
+        self.answered()
+        self.poll()
+        self.talked(60)
+        self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"})
+        self.fake.live = {"data": []}
+        att = DialAttempt.objects.get(call_id="c-1")
+        cache.set(f"dialer-release-{att.session_id}-{att.pk}", 1, RELEASE_RETRY_SECONDS)             # a try was just made and refused
+        self.poll()
+        self.assertNotIn("disposition", [c[0] for c in self.fake.calls])
+        cache.delete(f"dialer-release-{att.session_id}-{att.pk}")                                     # the few seconds have passed
+        self.poll()
+        self.assertIn(("disposition", "agent-token", "c-1", "555"), self.fake.calls)
+
     def test_an_outcome_with_no_smartflo_id_borrows_a_similar_one_so_the_agent_is_released(self):
         DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")
         DispositionMap.objects.filter(crm_code="will_pay_no_date").update(smartflo_status_id="777")   # same group as "PTP given"
