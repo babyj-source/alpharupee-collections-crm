@@ -19,6 +19,18 @@ class Command(BaseCommand):
         parser.add_argument("--apply", action="store_true", help="save the changes (default: only show them)")
         parser.add_argument("--show", action="store_true", help="print the masked webhook body of each message")
 
+    @staticmethod
+    def _label_unknown(m):
+        """No body left to read: say plainly what kind of message it was instead of leaving a bare [button]."""
+        word = m.text.strip("[]").lower()
+        if word == "button":
+            m.kind, m.text = "button", "Tapped a button (the choice was not recorded)"
+        elif word in media.MEDIA_TYPES:
+            m.kind, m.media_type, m.text = "media", ("audio" if word == "voice" else word), ""
+        else:
+            return
+        m.save()
+
     def handle(self, *args, **o):
         rows = [m for m in WhatsappMessage.objects.filter(direction="in").exclude(provider_ref="") if PLACEHOLDER.match(m.text or "")]
         bodies = list(WhatsappWebhookLog.objects.values_list("body", flat=True))
@@ -28,6 +40,8 @@ class Command(BaseCommand):
             body = next((b for b in bodies if ref in b), None)
             if body is None:
                 lost += 1
+                if o["apply"]:
+                    self._label_unknown(m)
                 continue
             if o["show"]:
                 self.stdout.write(f"--- message {m.pk} ({m.text}) body:\n{body[:1500]}")
@@ -44,9 +58,11 @@ class Command(BaseCommand):
             if o["apply"]:
                 m.kind, m.text = kind, text[:2000]
                 if file:
-                    m.media_type, m.media_name, m.media_mime, m.media_url = file["type"], file["name"], file["mime"], file["url"][:2000]
+                    masked = re.search(r"x{4,}", file["url"])       # the log hides long digit strings, so the saved link is no good
+                    m.media_type, m.media_name = file["type"], file["name"]
+                    m.media_mime, m.media_url = ("", "") if masked else (file["mime"], file["url"][:2000])
                 m.save()
-                if file and file["url"]:
+                if file and m.media_url:
                     media.fetch_inbound(m)
         self.stdout.write(f"{len(rows)} placeholder messages: {fixed} can be read now, {lost} have no webhook body left in the log."
                           + ("" if o["apply"] else " Nothing changed; add --apply to save."))
