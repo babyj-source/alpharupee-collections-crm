@@ -1,3 +1,7 @@
+from datetime import timedelta
+
+from django.utils import timezone
+
 from dialer.models import DialAttempt, DispositionMap, PushedLead
 from dialer.smartflo import SmartfloError
 from dialer.tests.test_dialer import DialerBase
@@ -89,6 +93,37 @@ class QueueTests(DialerBase):
     def test_resend_needs_a_running_campaign(self):
         self.post(self.a1, "session/stop")
         self.assertEqual(self.post(self.a1, "session/resend").status_code, 400)
+
+    def test_an_outcome_goes_to_the_call_it_belongs_to_even_when_the_next_call_is_already_live(self):
+        """Smartflo can ring the next customer the second a call ends; the outcome the agent is writing is still for the earlier call."""
+        from dialer.models import DialerSession
+        sess = DialerSession.objects.get()
+        now = timezone.now()
+        DialAttempt.objects.create(session=sess, loan=self.l1, call_id="old-call", state="ended", started_at=now - timedelta(minutes=2),
+                                   connected_at=now - timedelta(minutes=2), ended_at=now - timedelta(minutes=1))
+        DialerSession.objects.filter(pk=sess.pk).update(last_unique_id="new-call", last_loan=self.l2, released=False)
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"}).json()
+        self.assertEqual((r["released"], r["warning"]), (True, ""))
+        self.assertEqual(self.fake.calls[-1], ("disposition", "agent-token", "old-call", "555"))      # not the live call's id
+        sess.refresh_from_db()
+        self.assertEqual((sess.released, sess.last_unique_id), (False, "new-call"))                   # the live call is still owed its own outcome
+        self.assertTrue(DialAttempt.objects.get(call_id="old-call").outcome_sent)
+
+    def test_a_refused_outcome_is_retried_for_its_own_call_once_smartflo_has_a_number(self):
+        from dialer.models import DialerSession
+        sess = DialerSession.objects.get()
+        now = timezone.now()
+        DialAttempt.objects.create(session=sess, loan=self.l1, call_id="old-call", state="ended", started_at=now - timedelta(minutes=2),
+                                   connected_at=now - timedelta(minutes=2), ended_at=now - timedelta(minutes=1))
+        DialerSession.objects.filter(pk=sess.pk).update(last_unique_id="new-call", last_loan=self.l2, released=False)
+        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="")
+        DispositionMap.objects.exclude(crm_code="no_answer").update(smartflo_status_id="")
+        r = self.post(self.a1, f"session/outcome/{self.l1.pk}", {"code": "no_answer"}).json()
+        self.assertFalse(r["released"])
+        DispositionMap.objects.filter(crm_code="no_answer").update(smartflo_status_id="555")
+        self.poll()                                                                                   # the Dialer screen's own poll retries
+        self.assertIn(("disposition", "agent-token", "old-call", "555"), self.fake.calls)
+        self.assertTrue(DialAttempt.objects.get(call_id="old-call").outcome_sent)
 
     def test_an_outcome_with_no_smartflo_id_borrows_a_similar_one_so_the_agent_is_released(self):
         DispositionMap.objects.update(smartflo_status_id="", smartflo_code="")

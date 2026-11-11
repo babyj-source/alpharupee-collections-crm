@@ -105,6 +105,7 @@ class DialAttempt(models.Model):
     connected_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
+    outcome_sent = models.BooleanField(default=False, help_text="Smartflo has been told the outcome of this call")
 
     class Meta:
         ordering = ["-started_at", "-id"]
