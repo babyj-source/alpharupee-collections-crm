@@ -143,3 +143,9 @@ The CRM now reads the end of every dialler call from Smartflo's live list (the D
 - **CRM to Smartflo:** the Dialer screen's End call button hangs up through Smartflo's `/v1/call/hangup` (verified for click-to-call). Calls Smartflo
   places for the dialler are the same call ids, but this has not been tested on UAT for a dialler call yet.
 - Limits: the CRM only sees a call while the agent's Dialer screen is open. Smartflo does not say who hung up; a short call is the signal.
+
+## Follow-up: no 45-second wait after an outcome saved during the call
+An outcome saved while the call was still live was sent to Smartflo at once. Smartflo takes an outcome only for a finished call, so it was
+refused, and the retry was then held back for 45 seconds, which delayed the next customer by 35 to 45 seconds. Now the CRM does not send
+while the call is live ("Outcome saved. Smartflo will be told as soon as the call ends."), sends it in the very check that sees the call end,
+and if Smartflo refuses an ended call it tries again after 8 seconds (`RELEASE_RETRY_SECONDS`).
