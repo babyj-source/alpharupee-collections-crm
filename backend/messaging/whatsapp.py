@@ -1,4 +1,5 @@
 """WhatsApp: template messages, two-way chat inside the 24-hour window, and MSG91's webhook."""
+import logging
 import re
 from datetime import timedelta
 
@@ -9,10 +10,12 @@ from django.utils import timezone
 from loans.models import Activity, Loan
 from loans.workflow import CALL_END_HOUR, CALL_START_HOUR
 
-from . import msg91
-from .models import WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
+from . import media, msg91
+from .models import WhatsappMedia, WhatsappMessage, WhatsappTemplate, WhatsappWebhookLog
 from .service import _default_link, RepeatNeeded, SendRefused, in_window
 from .templates import MissingValue, render, variables_for
+
+log = logging.getLogger(__name__)
 
 
 def _valid_mobile(mobile):
@@ -119,6 +122,41 @@ def send_chat_text(loan, user, text, now=None):
     return msg
 
 
+def send_chat_attachment(loan, user, upload, caption="", base_url=""):
+    """A picture or document to the customer, inside the 24-hour window. MSG91 fetches the file from a short-lived public link."""
+    caption = (caption or "").strip()
+    if len(caption) > 1000:
+        raise SendRefused("Keep the caption under 1000 characters.")
+    if not msg91.whatsapp_enabled():
+        raise SendRefused("WhatsApp sending is switched off.")
+    if not _valid_mobile(loan.borrower_mobile):
+        raise SendRefused("The borrower has no valid mobile number.")
+    ok, _ = session_open(loan)
+    if not ok:
+        raise SendRefused(f"WhatsApp only allows attachments within {settings.WHATSAPP_SESSION_HOURS} hours of the customer's last message. Send a template instead.")
+    try:
+        mtype, name, mime, data = media.check_upload(upload)
+    except media.BadFile as exc:
+        raise SendRefused(str(exc)) from exc
+    base = settings.PUBLIC_BASE_URL or base_url
+    if not base.startswith("https://"):
+        raise SendRefused("The CRM's public https address is not set (PUBLIC_BASE_URL), so WhatsApp cannot fetch the file.")
+    msg = WhatsappMessage(loan=loan, direction="out", kind="media", text=caption, media_type=mtype, media_name=name, media_mime=mime,
+                          mobile_last4=loan.borrower_mobile[-4:], sent_by=user)
+    msg.save()
+    WhatsappMedia.objects.create(message=msg, content=data, size=len(data))
+    try:
+        msg.provider_ref = msg91.send_whatsapp_media(loan.borrower_mobile, mtype, media.public_link(msg, base), caption, name)
+        msg.state = "sent"
+    except msg91.Msg91Disabled:
+        msg.delete()
+        raise SendRefused("WhatsApp sending is switched off.")
+    except msg91.Msg91Error as exc:
+        msg.state, msg.error = "failed", str(exc)[:200]
+    msg.save()
+    return msg
+
+
 # ----------------------------------------------------------------------------------------------------------------- webhook
 _DIGITS = re.compile(r"\d{10,}")
 _NUMBER_KEYS = ("customerNumber", "customer_number", "from", "wa_id", "waId", "mobile", "mobile_number", "recipient", "contact", "msisdn")
@@ -150,6 +188,7 @@ def _loan_for(number):
 
 def handle_webhook(payload):
     """Apply one MSG91 webhook body. Returns a short label for the log: inbound, status, ignored."""
+    payload = media.expand(payload)
     direction = str(msg91._find(payload, ("direction",)) or "").lower()
     ref = msg91._find(payload, _REF_KEYS)
     status = str(msg91._find(payload, ("status", "event", "message_status")) or "").lower().replace(" ", "_")
@@ -161,16 +200,34 @@ def handle_webhook(payload):
             return "status"
     if direction in ("out", "outgoing", "outbound"):
         return "ignored"
-    number, text = msg91._find(payload, _NUMBER_KEYS), _text_of(payload)
+    number = msg91._find(payload, _NUMBER_KEYS)
     ctype = str(msg91._find(payload, ("contentType", "content_type", "type")) or "").lower()
-    if number and (text or ctype not in ("", "text", "template")):
-        text = text or f"[{ctype or 'attachment'}]"
+    file = None
+    if ctype in media.MEDIA_TYPES or ctype in ("", "media", "file", "attachment", "message"):
+        file = media.inbound_media(payload, ctype)
+    kind, text = "text", ""
+    if file:
+        kind, text = "media", file["caption"]
+    elif ctype in ("button", "interactive", "button_reply", "list_reply", "quick_reply") or (ctype not in ("", "text", "template") and media.button_text(payload)):
+        kind, text = "button", media.button_text(payload) or _text_of(payload) or "Tapped a button"
+    elif ctype in ("", "text", "template"):
+        text = _text_of(payload)
+    else:
+        kind, text = "media", media.other_text(payload, ctype)
+    if number and (text or file):
         loan = _loan_for(number)
         last4 = re.sub(r"\D", "", str(number))[-4:]
         if ref and WhatsappMessage.objects.filter(provider_ref=str(ref), direction="in").exists():
             return "ignored"          # MSG91 retried the same message
-        WhatsappMessage.objects.create(loan=loan, direction="in", kind="text" if text and not text.startswith("[") else "media", text=text[:2000],
-                                       state="received", provider_ref=str(ref or "")[:120], mobile_last4=last4, seen=False)
+        m = WhatsappMessage.objects.create(
+            loan=loan, direction="in", kind=kind, text=text[:2000], state="received", provider_ref=str(ref or "")[:120], mobile_last4=last4, seen=False,
+            media_type=file["type"] if file else "", media_name=file["name"] if file else "", media_mime=file["mime"] if file else "",
+            media_url=file["url"][:2000] if file else "")
+        if file and file["url"]:
+            try:
+                media.fetch_inbound(m)       # keep the file now, while MSG91's link is fresh; if it fails the chat tries again when opened
+            except Exception:
+                log.exception("Could not keep the WhatsApp file of message %s", m.pk)
         return "inbound" if loan else "inbound-unmatched"
     return "ignored"
 

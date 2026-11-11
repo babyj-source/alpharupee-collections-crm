@@ -164,6 +164,14 @@ class ChatTests(Wa):
             self.assertFalse(self.api(self.a2).get("/api/meta").json()["whatsapp_enabled"])
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+PDF = b"%PDF-1.4\n" + b"x" * 40
+
+
+def fetched(data=PNG, mime="image/png"):
+    return mock.patch("messaging.media.download", return_value=(data, mime))
+
+
 @ON
 class WebhookTests(Wa):
     URL = "/api/messaging/whatsapp/webhook?token=s3cret"
@@ -198,7 +206,10 @@ class WebhookTests(Wa):
 
     def test_media_without_text_is_noted(self):
         self.hook({"customerNumber": "919222222222", "contentType": "image", "uuid": "in-3"})
-        self.assertEqual(WhatsappMessage.objects.get().text, "[image]")
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.kind, m.media_type, m.text, m.media_url), ("media", "image", "", ""))      # no link from MSG91: nothing to download
+        row = self.api(self.a2).get(f"/api/messaging/whatsapp/chat?loan={self.l2.pk}").json()["messages"][0]
+        self.assertEqual((row["media"]["type"], row["media"]["ready"]), ("image", False))
 
     def test_unknown_number_is_kept_unlinked_and_our_own_echo_is_ignored(self):
         self.hook({"customerNumber": "919888800000", "text": "who is this", "uuid": "in-4"})
@@ -231,3 +242,157 @@ class WebhookTests(Wa):
         admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
         self.assertEqual(self.api(self.head).get("/api/messaging/whatsapp/webhook-log").status_code, 403)
         self.assertEqual(len(self.api(admin).get("/api/messaging/whatsapp/webhook-log").json()), 30)
+
+
+@ON
+class InboundFileTests(Wa):
+    URL = "/api/messaging/whatsapp/webhook?token=s3cret"
+
+    def hook(self, body):
+        return self.api().post(self.URL, json.dumps(body), content_type="application/json")
+
+    def test_photo_is_kept_and_shown_to_the_agent_who_owns_the_account(self):
+        body = {"customerNumber": "919222222222", "contentType": "image", "uuid": "p-1",
+                "image": json.dumps({"url": "https://media.example/a.jpg", "mime_type": "image/jpeg", "caption": "my receipt"})}
+        with fetched(b"\xff\xd8\xff\xe0" + b"j" * 30, "image/jpeg") as dl:
+            self.hook(body)
+        dl.assert_called_once_with("https://media.example/a.jpg")
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.kind, m.media_type, m.text, m.media_mime, m.state), ("media", "image", "my receipt", "image/jpeg", "received"))
+        r = self.api(self.a2).get(f"/api/messaging/whatsapp/media/{m.pk}")
+        self.assertEqual((r.status_code, r["Content-Type"], r["Content-Disposition"].split(";")[0]), (200, "image/jpeg", "inline"))
+        self.assertTrue(r.content.startswith(b"\xff\xd8\xff"))
+        self.assertEqual(self.api(self.a1).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 404)      # not their account
+        self.assertEqual(self.api().get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 403)
+        row = self.api(self.a2).get(f"/api/messaging/whatsapp/chat?loan={self.l2.pk}").json()["messages"][0]
+        self.assertEqual((row["text"], row["media"]["type"], row["media"]["url"], row["media"]["ready"]), ("my receipt", "image", f"/api/messaging/whatsapp/media/{m.pk}", True))
+
+    def test_file_is_fetched_when_the_chat_asks_if_the_webhook_could_not(self):
+        with fetched() as dl:
+            dl.return_value = None
+            self.hook({"customerNumber": "919222222222", "contentType": "image", "image": {"link": "https://media.example/b.png"}, "uuid": "p-2"})
+        m = WhatsappMessage.objects.get()
+        self.assertEqual(m.media_url, "https://media.example/b.png")
+        with fetched():
+            r = self.api(self.a2).get(f"/api/messaging/whatsapp/media/{m.pk}")
+        self.assertEqual((r.status_code, r["Content-Type"]), (200, "image/png"))
+        with mock.patch("messaging.media.download", side_effect=AssertionError("fetched twice")):
+            self.assertEqual(self.api(self.a2).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 200)       # kept after the first time
+
+    def test_document_keeps_its_name_and_is_not_run_in_the_page(self):
+        with fetched(b"<html><script>alert(1)</script></html>", "text/html"):
+            self.hook({"customerNumber": "919222222222", "contentType": "document", "uuid": "d-1",
+                       "document": {"url": "https://media.example/x", "filename": "../../salary slip.pdf", "caption": "slip"}})
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.media_type, m.media_name, m.text), ("document", "salary slip.pdf", "slip"))
+        r = self.api(self.a2).get(f"/api/messaging/whatsapp/media/{m.pk}")
+        self.assertEqual((r["Content-Type"], r["Content-Disposition"].split(";")[0]), ("application/octet-stream", "attachment"))
+        self.assertIn("sandbox", r["Content-Security-Policy"])
+
+    def test_button_replies_show_what_the_customer_tapped(self):
+        self.hook({"customerNumber": "919222222222", "contentType": "button", "uuid": "b-1", "button": json.dumps({"payload": "p1", "text": "Pay now"})})
+        self.hook({"customerNumber": "919222222222", "contentType": "interactive", "uuid": "b-2",
+                   "interactive": {"type": "button_reply", "button_reply": {"id": "x", "title": "I need more time"}}})
+        self.hook({"customerNumber": "919222222222", "contentType": "interactive", "uuid": "b-3",
+                   "interactive": {"type": "list_reply", "list_reply": {"id": "y", "title": "Next week"}}})
+        self.assertEqual([(m.kind, m.text) for m in WhatsappMessage.objects.order_by("id")],
+                         [("button", "Pay now"), ("button", "I need more time"), ("button", "Next week")])
+
+    def test_text_sent_as_a_json_string_is_unwrapped_and_a_location_is_described(self):
+        self.hook({"customerNumber": "919222222222", "contentType": "text", "uuid": "t-1", "text": json.dumps({"body": "Hello there"})})
+        self.hook({"customerNumber": "919222222222", "contentType": "location", "uuid": "l-1", "location": {"latitude": 12.97, "longitude": 77.59}})
+        self.hook({"customerNumber": "919222222222", "contentType": "sticker_pack", "uuid": "o-1"})
+        self.assertEqual([m.text for m in WhatsappMessage.objects.order_by("id")],
+                         ["Hello there", "Shared a location (12.97, 77.59)", "Sent a sticker_pack message that the CRM cannot show. Open it in WhatsApp."])
+
+    def test_inbox_names_a_photo_that_has_no_caption(self):
+        with fetched():
+            self.hook({"customerNumber": "919222222222", "contentType": "image", "image": {"url": "https://media.example/c.png"}, "uuid": "p-3"})
+        self.assertEqual(self.api(self.a2).get("/api/messaging/whatsapp/inbox").json()[0]["last_text"], "Photo")
+
+    def test_downloads_only_from_the_public_internet(self):
+        from messaging import media
+        with mock.patch("messaging.media.requests.get") as get:
+            self.assertIsNone(media.download("http://media.example/a.png"))                        # not https
+            for host in ("127.0.0.1", "169.254.169.254", "10.0.0.5"):
+                with mock.patch("messaging.media.socket.getaddrinfo", return_value=[(2, 1, 6, "", (host, 443))]):
+                    self.assertIsNone(media.download("https://internal.example/a.png"))
+            get.assert_not_called()
+
+    def test_a_redirect_to_a_private_address_is_not_followed(self):
+        from messaging import media
+
+        class R:
+            status_code, headers = 302, {"Location": "https://evil.example/x"}
+
+            def __enter__(self): return self
+
+            def __exit__(self, *a): return False
+
+        def resolve(host, *a, **k):
+            return [(2, 1, 6, "", ("8.8.8.8" if host == "media.example" else "10.1.1.1", 443))]
+        with mock.patch("messaging.media.socket.getaddrinfo", side_effect=resolve), mock.patch("messaging.media.requests.get", return_value=R()) as get:
+            self.assertIsNone(media.download("https://media.example/a.png"))
+        self.assertEqual(get.call_count, 1)
+
+
+@ON
+class AttachmentSendTests(Wa):
+    def open_window(self):
+        WhatsappMessage.objects.create(loan=self.l2, direction="in", text="hi", state="received", mobile_last4="2222")
+
+    def up(self, user, name="slip.png", data=PNG, text="", loan=None):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        body = {"loan": (loan or self.l2).pk, "file": SimpleUploadedFile(name, data), "text": text}
+        return self.api(user).post("/api/messaging/whatsapp/chat", body, format="multipart", HTTP_HOST="testserver")
+
+    def test_picture_goes_out_through_a_signed_public_link(self):
+        self.open_window()
+        with override_settings(PUBLIC_BASE_URL="https://crm.example"), mock.patch("messaging.msg91.requests.post", return_value=Resp()) as post:
+            r = self.up(self.a2, text="Your receipt")
+        self.assertEqual(r.status_code, 201, r.content)
+        d = r.json()
+        self.assertEqual((d["kind"], d["text"], d["media"]["type"], d["media"]["name"], d["state"]), ("media", "Your receipt", "image", "slip.png", "sent"))
+        body = post.call_args.kwargs["json"]
+        self.assertEqual((body["content_type"], body["recipient_number"], body["image"]["caption"]), ("image", "919222222222", "Your receipt"))
+        link = body["image"]["link"]
+        self.assertTrue(link.startswith("https://crm.example/api/messaging/whatsapp/media/"), link)
+        path = link.replace("https://crm.example", "")
+        got = self.api().get(path)                                       # MSG91 has no login
+        self.assertEqual((got.status_code, got["Content-Type"], got.content), (200, "image/png", PNG))
+        self.assertEqual(self.api().get(path[:-3] + "abc").status_code, 404)                      # a tampered link
+        other = WhatsappMessage.objects.create(loan=self.l2, direction="out", media_type="image", media_mime="image/png")
+        self.assertEqual(self.api().get(path.replace(f"/media/{d['id']}/", f"/media/{other.pk}/")).status_code, 404)   # a link is for one file only
+        self.assertTrue(AuditLog.objects.filter(action="whatsapp_chat_sent", detail="image: slip.png").exists())
+
+    def test_document_uses_its_own_shape_and_the_flat_one_is_tried_when_refused(self):
+        self.open_window()
+        refused = Resp(400, {"status": "fail", "message": "bad shape"})
+        with override_settings(PUBLIC_BASE_URL="https://crm.example"), mock.patch("messaging.msg91.requests.post", side_effect=[refused, Resp()]) as post:
+            r = self.up(self.a2, "Statement.pdf", PDF)
+        self.assertEqual((r.status_code, r.json()["state"]), (201, "sent"))
+        first, second = (c.kwargs["json"] for c in post.call_args_list)
+        self.assertEqual((first["content_type"], first["document"]["filename"]), ("document", "Statement.pdf"))
+        self.assertEqual((second["content_type"], second["filename"], second["media_url"] == first["document"]["link"]), ("document", "Statement.pdf", True))
+
+    def test_rules_window_type_size_and_scope(self):
+        with override_settings(PUBLIC_BASE_URL="https://crm.example"), mock.patch("messaging.msg91.requests.post") as post:
+            self.assertEqual(self.up(self.a2).status_code, 400)                                    # customer never wrote
+            self.open_window()
+            self.assertEqual(self.up(self.a2, "evil.png", b"<html>").status_code, 400)             # not really a picture
+            self.assertEqual(self.up(self.a2, "run.exe", b"MZ" + b"0" * 20).status_code, 400)      # not an allowed kind
+            self.assertEqual(self.up(self.a2, "big.png", PNG + b"0" * (5 * 1024 * 1024)).status_code, 400)
+            self.assertEqual(self.up(self.a2, "empty.pdf", b"").status_code, 400)
+            self.assertEqual(self.up(self.a1).status_code, 404)                                    # not their account
+            post.assert_not_called()
+        with override_settings(PUBLIC_BASE_URL=""), mock.patch("messaging.msg91.requests.post") as post:
+            self.assertEqual(self.up(self.a2).status_code, 400)                                    # a plain http address cannot be fetched by MSG91
+            post.assert_not_called()
+        self.assertEqual(WhatsappMessage.objects.filter(direction="out").count(), 0)
+
+    def test_msg91_refusal_keeps_the_message_as_failed(self):
+        self.open_window()
+        with override_settings(PUBLIC_BASE_URL="https://crm.example"), mock.patch("messaging.msg91.requests.post", return_value=Resp(500, {"message": "down"})):
+            r = self.up(self.a2)
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(WhatsappMessage.objects.get(direction="out").state, "failed")

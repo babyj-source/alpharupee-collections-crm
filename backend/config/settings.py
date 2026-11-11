@@ -193,6 +193,9 @@ MSG91_WHATSAPP_ENABLED = env_bool("MSG91_WHATSAPP_ENABLED", False)
 MSG91_WHATSAPP_NUMBER = env("MSG91_WHATSAPP_NUMBER", "")      # the business number connected to MSG91, digits with country code
 MSG91_WHATSAPP_TEMPLATE_URL = env("MSG91_WHATSAPP_TEMPLATE_URL", "https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/")
 MSG91_WHATSAPP_TEXT_URL = env("MSG91_WHATSAPP_TEXT_URL", "https://control.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/")
+MSG91_WHATSAPP_MEDIA_URL = env("MSG91_WHATSAPP_MEDIA_URL", "")   # pictures and documents; empty = the same address as free text
+# The public address of this CRM (https://crm.alpharupee.in): MSG91 fetches an attached file from it. Empty = taken from the request.
+PUBLIC_BASE_URL = env("PUBLIC_BASE_URL", "").rstrip("/")
 WHATSAPP_WEBHOOK_TOKEN = env("WHATSAPP_WEBHOOK_TOKEN", "")    # secret in the webhook address MSG91 calls; empty = webhook refuses everything
 # WhatsApp call button: opens the agent's own WhatsApp (wa.me link) on the customer's chat so they can tap the call icon. Off until true.
 WHATSAPP_CALL_ENABLED = env_bool("WHATSAPP_CALL_ENABLED", False)

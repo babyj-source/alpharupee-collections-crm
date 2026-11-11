@@ -91,7 +91,7 @@ class WhatsappMessage(models.Model):
 
     loan = models.ForeignKey("loans.Loan", null=True, blank=True, on_delete=models.SET_NULL, related_name="whatsapp")
     direction = models.CharField(max_length=3, choices=Direction.choices)
-    kind = models.CharField(max_length=10, default="text", help_text="template, text or media")
+    kind = models.CharField(max_length=10, default="text", help_text="template, text, media or button")
     template_key = models.CharField(max_length=40, blank=True)
     text = models.TextField(blank=True)
     state = models.CharField(max_length=12, default="sent", help_text="sent, delivered, read, failed (out) or received (in)")
@@ -100,11 +100,25 @@ class WhatsappMessage(models.Model):
     mobile_last4 = models.CharField(max_length=4, blank=True)
     sent_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     seen = models.BooleanField(default=True, help_text="inbound: an agent has opened it")
+    media_type = models.CharField(max_length=10, blank=True, help_text="image, document, audio, video or sticker when the message carries a file")
+    media_name = models.CharField(max_length=120, blank=True)
+    media_mime = models.CharField(max_length=100, blank=True)
+    media_url = models.TextField(blank=True, help_text="inbound: where MSG91 says the file can be downloaded")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["created_at", "id"]
         indexes = [models.Index(fields=["loan", "created_at"])]
+
+
+class WhatsappMedia(models.Model):
+    """The bytes of a file in a WhatsApp message (a photo the customer sent, a document an agent attached), kept so the chat can
+    show it after MSG91's own download link has expired."""
+
+    message = models.OneToOneField(WhatsappMessage, on_delete=models.CASCADE, related_name="media")
+    content = models.BinaryField()
+    size = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class WhatsappWebhookLog(models.Model):

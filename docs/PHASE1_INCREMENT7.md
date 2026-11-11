@@ -164,3 +164,27 @@ bash /opt/crm/current/server-tools/set-whatsapp.sh calls on
 bash /opt/crm/current/server-tools/set-whatsapp.sh calling enable      # optional: add --hours for 08:00-19:00 only
 ```
 Not verified until used: MSG91 accepting the call-settings body, and whether Meta has Calling approved for the number.
+
+## Photos, documents and button replies in the WhatsApp chat (added Nov 2026)
+
+What was wrong: the webhook kept only the customer's *text*. A photo or document arrived as a bare `[image]`, and a button the customer
+tapped arrived as `[button]`. The chat also had no way to send a file.
+
+What it does now:
+
+- **Inbound files.** The webhook reads the file object MSG91 sends (image, document, audio, video, sticker; nested objects sent as JSON
+  strings are unwrapped), downloads the file at once (https only, public hosts only, 16 MB at most) and keeps it in the CRM database
+  (`WhatsappMedia`). The chat shows pictures in place, plays voice notes and videos, and offers documents as a download. Files are served
+  from `/api/messaging/whatsapp/media/<id>` to a signed-in user who can see that account; anything the browser could run (html, svg ...)
+  is only ever offered as a download. If MSG91 sent no link, the bubble says so.
+- **Button replies.** The title of the button or list row the customer chose is shown ("Pay now", "I need more time"), tagged "Tapped a button".
+  Locations, contacts and reactions are described in words; any other new kind shows "Sent a ... message that the CRM cannot show".
+- **Sending a file.** The chat has an **Attach** button (JPG or PNG up to 5 MB; PDF, Word, Excel, PowerPoint, text, CSV up to 10 MB), with an
+  optional caption. Only inside the 24-hour window, like free text. The file's type is checked from its first bytes. MSG91 fetches it from a
+  signed public link that names that one file and expires after 6 hours (`/media/<id>/public?t=...`). The CRM's public address comes from the
+  request, or from `PUBLIC_BASE_URL` in `.env` (must be `https://`).
+- **Not yet checked against MSG91:** the exact body of the media-send call. The CRM first sends `image: {link, caption}` (WhatsApp Cloud API
+  style); if MSG91 answers 4xx it retries once with a flat `media_url` body. If both are refused the message shows as failed with MSG91's reply
+  under it. The address can be changed with `MSG91_WHATSAPP_MEDIA_URL` (default: the same address as free text). Test it once on UAT with a
+  real customer chat.
+- Files the customer sent *before* this change were stored as plain `[image]` text and cannot be recovered.

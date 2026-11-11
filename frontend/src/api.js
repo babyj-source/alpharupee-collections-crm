@@ -36,6 +36,19 @@ export async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
+// Sends a file (multipart). Same session cookie and CSRF header; the browser sets the multipart boundary itself.
+export async function upload(path, form) {
+  const res = await fetch(`/api${path}`, { method: "POST", headers: { Accept: "application/json", "X-CSRFToken": csrfToken() }, credentials: "same-origin", body: form });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* empty body */
+  }
+  if (!res.ok) throw new ApiError(res.status, (data && (data.detail || firstError(data))) || `Request failed (${res.status})`);
+  return data;
+}
+
 function firstError(data) {
   const v = Object.values(data)[0];
   return Array.isArray(v) ? v[0] : typeof v === "string" ? v : null;

@@ -105,6 +105,14 @@ button.danger:disabled { opacity: .6; }
 .bubble.out { align-self: flex-end; background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .bubble.failed { background: color-mix(in srgb, var(--err) 22%, transparent); }
 .bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-img { display: block; max-width: 240px; max-height: 260px; width: auto; height: auto; border-radius: 8px; margin-bottom: 4px; background: var(--bg); }
+.bubble-audio { width: 220px; max-width: 100%; margin-bottom: 4px; }
+.bubble-file { display: inline-block; margin-bottom: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow-wrap: anywhere; }
+.bubble-tag { font-size: .72rem; color: var(--muted); margin-bottom: 2px; }
+.media-missing { padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; margin-bottom: 4px; overflow-wrap: anywhere; }
+.attach-strip { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 4px; }
+.attach-strip .attach-name { font-weight: 600; overflow-wrap: anywhere; }
+.attach-strip button { margin-left: auto; }
 .bubble-meta { font-size: .72rem; color: var(--muted); margin-top: 2px; }
 .chat-input input { flex: 1 1 auto; min-width: 0; }
 
