@@ -91,7 +91,7 @@ export default function Payments({ user }) {
                 <td>{r.borrower_name || <span className="muted">—</span>}</td>
                 <td className="r">{inr(r.amount)}</td>
                 <td><span className={`chip ${linkChip[r.state] || ""}`}>{r.state_label}</span></td>
-                <td>{when(r.paid_at)}</td>
+                <td>{when(r.paid_at)}{r.easebuzz_txn_id && <div className="small muted" title="Easebuzz transaction id">{r.easebuzz_txn_id}</div>}</td>
                 <td>
                   {r.lms ? <span className={`chip ${lmsChip[r.lms] || ""}`}>{r.lms_label}</span> : <span className="muted">—</span>}
                   {head && r.lms_note && r.lms !== "posted" && <div className="small muted" title="What the LMS said">{r.lms_note}</div>}

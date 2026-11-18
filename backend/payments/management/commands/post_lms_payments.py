@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand
 
 from payments import lms
 from payments.models import PaymentLink
-from payments.service import LinkRefused, post_pending, post_to_lms
+from payments.service import LinkRefused, easebuzz_id, post_pending, post_to_lms
 
 
 class Command(BaseCommand):
@@ -32,6 +32,7 @@ class Command(BaseCommand):
                 self.stderr.write("No such link.")
                 return
             if dry_run:
+                easebuzz_id(obj)                      # fetch it from Easebuzz if the link does not have it yet
                 self.stdout.write(json.dumps(lms.build_body(obj), indent=2))
                 return
             if not send:

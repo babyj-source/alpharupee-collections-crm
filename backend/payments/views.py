@@ -27,6 +27,7 @@ from .service import LinkRefused, StaleClosure, create_for_loan, post_to_lms, pr
 def _row(link):
     return {"id": link.pk, "ref": link.merchant_txn, "amount": str(link.amount), "as_on": link.closure_as_on, "url": link.payment_url, "state": link.state,
             "state_label": link.get_state_display(), "expires_on": link.expires_on, "created_at": link.created_at, "paid_at": link.paid_at,
+            "easebuzz_txn_id": link.easebuzz_txn_id,
             "by": link.created_by.name if link.created_by else "", "lms": link.lms_state}
 
 
