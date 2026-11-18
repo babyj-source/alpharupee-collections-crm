@@ -21,7 +21,7 @@ from loans.views import scoped
 from . import easebuzz
 from . import webhook
 from .models import PaymentLink, PaymentWebhookLog
-from .service import LinkRefused, StaleClosure, create_for_loan, preview, refresh
+from .service import LinkRefused, StaleClosure, create_for_loan, post_to_lms, preview, refresh
 
 
 def _row(link):
@@ -139,6 +139,26 @@ def _list_row(link):
             "agent_name": agent.name if agent else "", "lms_label": link.get_lms_state_display(), "checked_at": link.checked_at}
 
 
+class LinkPostLmsView(APIView):
+    """Admin: post a paid link whose LMS posting failed once more. The CRM never does this by itself, because a failure can mean the
+    LMS did take the repayment and only its answer was lost; the Admin checks the LMS first."""
+
+    permission_classes = [IsAdmin]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "payment"
+
+    def post(self, request, pk):
+        link = get_object_or_404(PaymentLink.objects.select_related("loan", "created_by"), pk=pk)
+        if link.lms_state != PaymentLink.Lms.FAILED:
+            return Response({"detail": "Only a link whose posting failed can be posted again."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            link = post_to_lms(link, user=request.user, again=True)
+        except LinkRefused as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        audit(request, "lms_repayment_retry", user=request.user, object_type="loan", object_id=link.loan_id, detail=f"{link.merchant_txn}: {link.lms_state}")
+        return Response({**_list_row(link), "lms_note": link.lms_note})
+
+
 class LinksListView(APIView):
     """Payment tracking screen: every payment link on the user's accounts, newest first. Filters: state, lms, q, days."""
 
@@ -153,7 +173,8 @@ class LinksListView(APIView):
             qs = qs.filter(lms_state="")
         page = Page()
         rows = page.paginate_queryset(qs, request)
-        return page.get_paginated_response([_list_row(x) for x in rows])
+        notes = request.user.is_head                   # what the LMS said is for the head and the Admin, not for agents
+        return page.get_paginated_response([{**_list_row(x), **({"lms_note": x.lms_note, "lms_tries": x.lms_tries} if notes else {})} for x in rows])
 
 
 class LinksSummaryView(APIView):

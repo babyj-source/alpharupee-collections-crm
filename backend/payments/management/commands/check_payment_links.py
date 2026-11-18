@@ -5,7 +5,7 @@ from django.utils import timezone
 
 from payments import easebuzz
 from payments.models import PaymentLink
-from payments.service import refresh
+from payments.service import post_pending, refresh
 
 
 class Command(BaseCommand):
@@ -18,6 +18,12 @@ class Command(BaseCommand):
         if not easebuzz.enabled():
             self.stdout.write("Payment links are not switched on; nothing to check.")
             return
+        self.check(days)
+        posted, failed, left = post_pending()
+        if posted or failed or left:
+            self.stdout.write(f"LMS: posted {posted}, failed {failed}, waiting {left}")
+
+    def check(self, days):
         links = PaymentLink.objects.filter(state=PaymentLink.State.ACTIVE, created_at__gte=timezone.now() - timedelta(days=days)).select_related("loan")
         checked = changed = failed = 0
         for link in links:

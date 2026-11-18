@@ -13,6 +13,7 @@ class PaymentLink(models.Model):
     class Lms(models.TextChoices):
         NONE = "", "Not paid"
         PENDING = "pending", "Waiting to be posted to the LMS"
+        POSTING = "posting", "Being posted to the LMS"
         POSTED = "posted", "Posted to the LMS"
         FAILED = "failed", "Posting to the LMS failed"
 
@@ -26,6 +27,10 @@ class PaymentLink(models.Model):
     expires_on = models.DateField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     lms_state = models.CharField(max_length=10, choices=Lms.choices, blank=True, default="")
+    lms_posted_at = models.DateTimeField(null=True, blank=True)
+    lms_tried_at = models.DateTimeField(null=True, blank=True)       # when the repayment was last sent (or being sent) to the LMS
+    lms_tries = models.IntegerField(default=0)                       # how many times the repayment was sent to the LMS
+    lms_note = models.CharField(max_length=300, blank=True)         # what the LMS said last (or why nothing was sent), for the Admin
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
     checked_at = models.DateTimeField(null=True, blank=True)

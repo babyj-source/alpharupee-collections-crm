@@ -7,6 +7,7 @@ urlpatterns = [
     path("summary", views.LinksSummaryView.as_view()),
     path("link", views.LinkView.as_view()),
     path("link/<int:pk>/refresh", views.LinkRefreshView.as_view()),
+    path("link/<int:pk>/post-lms", views.LinkPostLmsView.as_view()),
     path("webhook", views.EasebuzzWebhookView.as_view()),
     path("webhook-log", views.WebhookLogView.as_view()),
 ]

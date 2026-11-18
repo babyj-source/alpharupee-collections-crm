@@ -190,6 +190,18 @@ EASEBUZZ_BASE_URL = env("EASEBUZZ_BASE_URL", "https://testdashboard.easebuzz.in"
 EASEBUZZ_WEBHOOK_TOKEN = env("EASEBUZZ_WEBHOOK_TOKEN", "")     # secret in the webhook address Easebuzz calls; empty = the webhook refuses everything
 PAYMENT_LINK_VALID_DAYS = int(env("PAYMENT_LINK_VALID_DAYS", "2"))    # a link made today works until the end of today + this many days
 
+# ---- Posting paid payment links to the LMS (Encore "flow collection" API, postTransactionListDirect). OFF until LMS_POST_ENABLED=true
+# and the user, password, bank account code and instrument are set (deploy/server/set-lms-posting.sh asks for them).
+LMS_POST_ENABLED = env_bool("LMS_POST_ENABLED", False)
+LMS_POST_URL = env("LMS_POST_URL", "https://encore-uat.alpharupee.in/lms-uat-server/webservices/loans/accounts/postTransactionListDirect")
+LMS_POST_USER = env("LMS_POST_USER", "")                        # the LMS API user (role vuser)
+LMS_POST_PASSWORD = env("LMS_POST_PASSWORD", "")
+LMS_POST_USER_ID = env("LMS_POST_USER_ID", "") or LMS_POST_USER    # sent as the transaction's userId
+LMS_POST_ACCOUNT_CODE = env("LMS_POST_ACCOUNT_CODE", "")         # the bank account code the money is booked to, e.g. BANK001
+LMS_POST_INSTRUMENT = env("LMS_POST_INSTRUMENT", "")             # e.g. CASH, ONLINE: the LMS's name for how it was paid
+LMS_POST_TIMEOUT_SECONDS = int(env("LMS_POST_TIMEOUT_SECONDS", "30"))
+LMS_POST_OK_WORDS = env("LMS_POST_OK_WORDS", "success,successful,ok,executed,posted,0,00,200")   # what the LMS's status / responseCode says when it took the repayment
+
 # ---- WhatsApp through MSG91. OFF until MSG91_WHATSAPP_ENABLED=true. The two URLs are from memory of MSG91's API and have not been
 # checked against its documentation: if MSG91 refuses a request, correct them here without a code change.
 MSG91_WHATSAPP_ENABLED = env_bool("MSG91_WHATSAPP_ENABLED", False)

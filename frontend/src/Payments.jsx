@@ -4,7 +4,7 @@ import Account from "./Account.jsx";
 
 const when = (t) => (t ? new Date(t).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
 const linkChip = { active: "today", paid: "ok", expired: "bad" };
-const lmsChip = { pending: "today", posted: "ok", failed: "bad" };
+const lmsChip = { pending: "today", posting: "today", posted: "ok", failed: "bad" };
 const STATES = [["", "All links"], ["active", "Waiting for payment"], ["paid", "Paid"], ["expired", "Expired"]];
 const LMS = [["", "Any LMS status"], ["pending", "Waiting to be posted"], ["posted", "Posted"], ["failed", "Posting failed"], ["notpaid", "Not paid yet"]];
 const DAYS = [["0", "All time"], ["1", "Today"], ["7", "Last 7 days"], ["30", "Last 30 days"]];
@@ -35,6 +35,12 @@ export default function Payments({ user }) {
   async function check(r) {
     setError(""); setBusy(r.id);
     try { await api(`/payments/link/${r.id}/refresh`, { method: "POST" }); load(); }
+    catch (e) { setError(e.message); } finally { setBusy(0); }
+  }
+  async function postAgain(r) {
+    if (!window.confirm("Check the LMS first. If the LMS already has this repayment, posting it again would count it twice.\n\nPost this repayment to the LMS again?")) return;
+    setError(""); setBusy(r.id);
+    try { await api(`/payments/link/${r.id}/post-lms`, { method: "POST" }); load(); }
     catch (e) { setError(e.message); } finally { setBusy(0); }
   }
   async function openAccount(r) {
@@ -86,16 +92,22 @@ export default function Payments({ user }) {
                 <td className="r">{inr(r.amount)}</td>
                 <td><span className={`chip ${linkChip[r.state] || ""}`}>{r.state_label}</span></td>
                 <td>{when(r.paid_at)}</td>
-                <td>{r.lms ? <span className={`chip ${lmsChip[r.lms] || ""}`}>{r.lms_label}</span> : <span className="muted">—</span>}</td>
+                <td>
+                  {r.lms ? <span className={`chip ${lmsChip[r.lms] || ""}`}>{r.lms_label}</span> : <span className="muted">—</span>}
+                  {head && r.lms_note && r.lms !== "posted" && <div className="small muted" title="What the LMS said">{r.lms_note}</div>}
+                </td>
                 {head && <td>{r.agent_name || <span className="muted">Unassigned</span>}</td>}
-                <td onClick={(e) => e.stopPropagation()}>{r.state === "active" && <button className="ghost" disabled={busy === r.id} onClick={() => check(r)}>{busy === r.id ? "…" : "Check"}</button>}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {r.state === "active" && <button className="ghost" disabled={busy === r.id} onClick={() => check(r)}>{busy === r.id ? "…" : "Check"}</button>}
+                  {user.role === "admin" && r.lms === "failed" && <button className="ghost" disabled={busy === r.id} onClick={() => postAgain(r)}>{busy === r.id ? "…" : "Post again"}</button>}
+                </td>
               </tr>
             ))}
             {data.results.length === 0 && <tr><td colSpan={head ? 9 : 8} className="muted">No payment links match.</td></tr>}
           </tbody>
         </table>
       </div>
-      <p className="muted small">Payments are noticed by Easebuzz's webhook and by a check every minute. Posting a paid payment to the LMS is not switched on yet, so paid payments wait here as “Waiting to be posted”.</p>
+      <p className="muted small">Payments are noticed by Easebuzz's webhook and by a check every minute. A paid payment is posted to the LMS as a repayment by itself, once posting is switched on. If it fails, the Admin sees what the LMS said and checks the LMS before pressing Post again.</p>
       <div className="row small muted">
         <span>{data.count} payment links</span><span className="grow" />
         <button className="ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
