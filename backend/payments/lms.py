@@ -47,11 +47,11 @@ def _amount(value):
 
 
 def build_body(link):
-    """The JSON the LMS is sent for one paid link."""
+    """The JSON the LMS is sent for one paid link. `transactionId` is Easebuzz's own id of the payment."""
     paid_on = timezone.localdate(link.paid_at or timezone.now())
     return {
         "transactions": [{
-            "transactionId": None, "valueDateStr": paid_on.isoformat(), "transactionDateStr": None, "systemDateAndTimeStr": None,
+            "transactionId": link.easebuzz_txn_id or None, "valueDateStr": paid_on.isoformat(), "transactionDateStr": None, "systemDateAndTimeStr": None,
             "accountId": link.loan.account_id, "entityId": None, "sequenceNum": -1, "transactionName": "Repayment",
             "part1": None, "part2": 0, "part3": None, "part4": None, "part5": None, "part6": None, "part7": None, "part8": None,
             "amount": None, "amount1": _amount(link.amount), "amount2": None, "amount3": None,

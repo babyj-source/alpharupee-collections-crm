@@ -24,6 +24,7 @@ class PaymentLink(models.Model):
     payment_url = models.URLField(max_length=300)
     state = models.CharField(max_length=10, choices=State.choices, default=State.ACTIVE)
     easebuzz_state = models.CharField(max_length=30, blank=True)     # what Easebuzz last said, for support
+    easebuzz_txn_id = models.CharField(max_length=40, blank=True)    # Easebuzz's own id of the payment (S26...), sent to the LMS as the transaction id
     expires_on = models.DateField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     lms_state = models.CharField(max_length=10, choices=Lms.choices, blank=True, default="")

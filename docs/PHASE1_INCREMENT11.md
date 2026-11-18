@@ -41,3 +41,9 @@ Amount posted = the link amount (a link is for a fixed amount). Migration paymen
 The LMS answered HTTP 200 with a JSON **list** of the transactions (not `{"transactions": [...]}`), so the CRM called it "unclear" and marked the link Failed,
 which is the safe direction. The reader now accepts both shapes, and the LMS's whole answer is kept on the link (`lms_reply`, payments migration 0004) and printed by
 `post_lms_payments --link ... --send`, so the real success wording can be read and `LMS_POST_OK_WORDS` set from it.
+
+## Easebuzz transaction id as the LMS transaction id (18 Nov)
+The first accepted post (account 100110100059) showed the LMS works with the sample request. Now the LMS `transactionId` carries Easebuzz's own id of the payment
+(`transaction_id` in Easebuzz's link status answer, the same as `easepayid` in its webhook, for example S261109076BUKE). The CRM keeps it on the link (`easebuzz_txn_id`,
+payments migration 0005), takes it when the payment is noticed, and asks Easebuzz for it once if an older paid link lacks it. If Easebuzz gives no id, the link waits and
+nothing is posted. `reference` keeps our link code (`instrumentRef:ARC...`) so an LMS entry can be traced back to the CRM link. The Payments screen shows the id under "Paid at".

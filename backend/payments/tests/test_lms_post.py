@@ -28,7 +28,7 @@ class PostTests(P):
     def setUp(self):
         super().setUp()
         self.link = PaymentLink.objects.create(loan=self.l2, merchant_txn="ARCTEST1", amount=Decimal("8980"), payment_url=URL, state="paid",
-                                               lms_state="pending", paid_at=timezone.now(), created_by=self.a2)
+                                               lms_state="pending", paid_at=timezone.now(), created_by=self.a2, easebuzz_txn_id="S2611TEST1")
         self.admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
 
     def fresh(self):
@@ -46,6 +46,7 @@ class PostTests(P):
         self.assertEqual((t["accountId"], t["transactionName"], t["amount1"], t["sequenceNum"], t["instrument"], t["currencyCode"]),
                          (self.l2.account_id, "Repayment", "8980", -1, "ONLINE", "INR"))
         self.assertEqual(t["reference"], "accountCode:BANK001|instrumentRef:ARCTEST1")
+        self.assertEqual(t["transactionId"], "S2611TEST1")                              # Easebuzz's own payment id
         self.assertEqual((t["valueDateStr"], t["userId"]), (timezone.localdate().isoformat(), "crm"))
         self.assertEqual((body["safeMode"], body["actionType"], body["transactionFormat"], body["commitSize"]), (False, "EXECUTION", "Default", 1))
 
@@ -200,3 +201,34 @@ class PostTests(P):
         with mock.patch("payments.lms.requests.post", return_value=Resp([{"status": "FAILED", "response": "Value date not allowed"}])):
             post_to_lms(self.link)
         self.assertIn("rejected", self.fresh().lms_note)
+
+    def test_without_easebuzzs_id_nothing_is_posted_and_it_waits(self):
+        PaymentLink.objects.filter(pk=self.link.pk).update(easebuzz_txn_id="")
+        self.link.refresh_from_db()
+        with mock.patch("payments.service.easebuzz.get_link", return_value={"payment_made": 1}), mock.patch("payments.lms.requests.post") as post:
+            post_to_lms(self.link)
+            post_pending()
+        self.assertFalse(post.called)
+        l = self.fresh()
+        self.assertEqual(l.lms_state, "pending")
+        self.assertIn("Easebuzz's transaction id", l.lms_note)
+
+    def test_the_id_is_fetched_from_easebuzz_once_and_then_sent_to_the_lms(self):
+        PaymentLink.objects.filter(pk=self.link.pk).update(easebuzz_txn_id="")
+        self.link.refresh_from_db()
+        with mock.patch("payments.service.easebuzz.get_link", return_value={"payment_made": 1, "transaction_id": "S261109076BUKE"}) as get, \
+                mock.patch("payments.lms.requests.post", return_value=took()) as post:
+            post_to_lms(self.link)
+        self.assertEqual(post.call_args.kwargs["json"]["transactions"][0]["transactionId"], "S261109076BUKE")
+        l = self.fresh()
+        self.assertEqual((l.lms_state, l.easebuzz_txn_id, get.call_count), ("posted", "S261109076BUKE", 1))
+
+    def test_noticing_a_payment_stores_easebuzzs_transaction_id(self):
+        from payments.service import refresh
+        PaymentLink.objects.filter(pk=self.link.pk).update(state="active", lms_state="", easebuzz_txn_id="")
+        self.link.refresh_from_db()
+        data = {"payment_made": 1, "state": "active", "quick_pay_transaction_date": "2026-11-09T11:00:14Z", "transaction_id": "S261109076BUKE"}
+        with mock.patch("payments.easebuzz.get_link", return_value=data):
+            refresh(self.link)
+        l = self.fresh()
+        self.assertEqual((l.state, l.lms_state, l.easebuzz_txn_id), ("paid", "pending", "S261109076BUKE"))

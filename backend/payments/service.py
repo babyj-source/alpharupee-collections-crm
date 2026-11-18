@@ -122,6 +122,8 @@ def refresh(link, now=None):
         paid = int(data.get("payment_made") or 0) > 0
     except (TypeError, ValueError):
         paid = False
+    if paid and not link.easebuzz_txn_id:
+        link.easebuzz_txn_id = str(data.get("transaction_id") or "").strip()[:40]
     if paid and link.state != PaymentLink.State.PAID:
         link.state, link.paid_at, link.lms_state = PaymentLink.State.PAID, _parse_dt(data.get("quick_pay_transaction_date")) or now, PaymentLink.Lms.PENDING
         changed = True
@@ -138,6 +140,20 @@ LMS_AUTO_TRIES = 5          # a repayment that could not even be sent is tried a
 LMS_STALE_MINUTES = 10      # "being posted" for longer than this means the CRM stopped halfway: nobody knows if the LMS has it
 
 
+def easebuzz_id(link):
+    """Easebuzz's own id of this link's payment ("transaction_id" in its status answer), kept on the link. '' when Easebuzz does not give one."""
+    if link.easebuzz_txn_id:
+        return link.easebuzz_txn_id
+    try:
+        tid = str(easebuzz.get_link(link.merchant_txn).get("transaction_id") or "").strip()[:40]
+    except (easebuzz.EasebuzzError, easebuzz.EasebuzzDisabled):
+        return ""
+    if tid:
+        PaymentLink.objects.filter(pk=link.pk).update(easebuzz_txn_id=tid)
+        link.easebuzz_txn_id = tid
+    return tid
+
+
 def post_to_lms(link, user=None, again=False, now=None):
     """Post one paid link to the LMS as a repayment, at most once at a time. `again=True` (an Admin, on a failed one) also takes a
     failed link. Returns the link. Whatever the LMS says is kept on the link; a repayment is never posted twice by the CRM on its own."""
@@ -145,6 +161,11 @@ def post_to_lms(link, user=None, again=False, now=None):
     if link.state != PaymentLink.State.PAID:
         raise LinkRefused("This payment link has not been paid.")
     allowed = [PaymentLink.Lms.PENDING] + ([PaymentLink.Lms.FAILED] if again else [])
+    if link.lms_state in allowed and not easebuzz_id(link):
+        # The LMS is sent Easebuzz's transaction id; without it nothing is posted (it is looked up again on the next run).
+        PaymentLink.objects.filter(pk=link.pk, lms_state=link.lms_state).update(lms_note="Waiting for Easebuzz's transaction id before posting to the LMS.")
+        link.refresh_from_db()
+        return link
     if not PaymentLink.objects.filter(pk=link.pk, state=PaymentLink.State.PAID, lms_state__in=allowed).update(lms_state=PaymentLink.Lms.POSTING, lms_tried_at=now):
         link.refresh_from_db()
         return link                                       # already posted, being posted, or not allowed to be posted again
