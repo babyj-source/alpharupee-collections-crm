@@ -10,7 +10,9 @@ from django.utils import timezone
 from loans.models import Activity
 from loans.phones import normalise_mobile
 
-from . import easebuzz
+from accounts.models import audit
+
+from . import easebuzz, lms
 from .models import PaymentLink
 
 
@@ -129,3 +131,56 @@ def refresh(link, now=None):
         changed = True
     link.save()
     return changed
+
+
+# ------------------------------------------------------------------------------------------------ posting to the LMS
+LMS_AUTO_TRIES = 5          # a repayment that could not even be sent is tried again each minute, this many times
+LMS_STALE_MINUTES = 10      # "being posted" for longer than this means the CRM stopped halfway: nobody knows if the LMS has it
+
+
+def post_to_lms(link, user=None, again=False, now=None):
+    """Post one paid link to the LMS as a repayment, at most once at a time. `again=True` (an Admin, on a failed one) also takes a
+    failed link. Returns the link. Whatever the LMS says is kept on the link; a repayment is never posted twice by the CRM on its own."""
+    now = now or timezone.now()
+    if link.state != PaymentLink.State.PAID:
+        raise LinkRefused("This payment link has not been paid.")
+    allowed = [PaymentLink.Lms.PENDING] + ([PaymentLink.Lms.FAILED] if again else [])
+    if not PaymentLink.objects.filter(pk=link.pk, state=PaymentLink.State.PAID, lms_state__in=allowed).update(lms_state=PaymentLink.Lms.POSTING, lms_tried_at=now):
+        link.refresh_from_db()
+        return link                                       # already posted, being posted, or not allowed to be posted again
+    link.refresh_from_db()
+    try:
+        result, note = lms.post(link)
+    except lms.NotReady as exc:
+        PaymentLink.objects.filter(pk=link.pk).update(lms_state=PaymentLink.Lms.PENDING, lms_note=str(exc)[:300])
+        link.refresh_from_db()
+        raise LinkRefused(str(exc))
+    link.lms_tries += 1
+    link.lms_note = note[:300]
+    if result == "ok":
+        link.lms_state, link.lms_posted_at = PaymentLink.Lms.POSTED, timezone.now()
+        Activity.objects.create(loan=link.loan, user=None, kind=Activity.Kind.MESSAGE, detail=f"Repayment of ₹{link.amount:,.0f} posted to the LMS")
+        audit(None, "lms_repayment_posted", user=user, object_type="loan", object_id=link.loan_id, detail=link.merchant_txn)
+    elif result == "not_sent" and link.lms_tries < LMS_AUTO_TRIES:
+        link.lms_state = PaymentLink.Lms.PENDING          # nothing left the server: safe to try again next minute
+    else:
+        link.lms_state = PaymentLink.Lms.FAILED
+        audit(None, "lms_repayment_" + result, user=user, object_type="loan", object_id=link.loan_id, detail=link.merchant_txn)
+    link.save(update_fields=["lms_state", "lms_tries", "lms_note", "lms_posted_at"])
+    return link
+
+
+def post_pending(now=None, limit=20):
+    """Called every minute: post the paid links that wait for the LMS, and stop any that were left half-sent. Returns (posted, failed, left)."""
+    now = now or timezone.now()
+    PaymentLink.objects.filter(lms_state=PaymentLink.Lms.POSTING, lms_tried_at__lt=now - timedelta(minutes=LMS_STALE_MINUTES)).update(
+        lms_state=PaymentLink.Lms.FAILED,
+        lms_note="The CRM stopped while posting, so it is not known whether the LMS has this repayment. Check the LMS before posting again.")
+    if not lms.enabled():
+        return 0, 0, PaymentLink.objects.filter(lms_state=PaymentLink.Lms.PENDING).count()
+    posted = failed = 0
+    for link in PaymentLink.objects.filter(state=PaymentLink.State.PAID, lms_state=PaymentLink.Lms.PENDING).select_related("loan").order_by("paid_at", "id")[:limit]:
+        link = post_to_lms(link, now=now)
+        posted += link.lms_state == PaymentLink.Lms.POSTED
+        failed += link.lms_state == PaymentLink.Lms.FAILED
+    return posted, failed, PaymentLink.objects.filter(lms_state=PaymentLink.Lms.PENDING).count()
