@@ -232,3 +232,33 @@ class PostTests(P):
             refresh(self.link)
         l = self.fresh()
         self.assertEqual((l.state, l.lms_state, l.easebuzz_txn_id), ("paid", "pending", "S261109076BUKE"))
+
+    def test_the_minute_job_runs_the_way_the_timer_runs_it_and_posts_the_waiting_repayment(self):
+        """The timer starts `manage.py check_payment_links`, which (unlike call_command) runs Django's own start-up checks first.
+        A helper named `check` once broke the job there while every other test passed."""
+        from payments import easebuzz
+        out = StringIO()
+        with override_settings(EASEBUZZ_ENABLED=True, EASEBUZZ_KEY="K", EASEBUZZ_SALT="S"), mock.patch("payments.lms.requests.post", return_value=took()) as post:
+            call_command("check_payment_links", skip_checks=False, stdout=out)
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(self.fresh().lms_state, "posted")
+        self.assertIn("LMS: posted 1", out.getvalue())
+
+    def test_no_management_command_hides_a_django_method(self):
+        """Names like check/execute/run_from_argv belong to Django's BaseCommand; reusing one by accident breaks the command at start-up."""
+        import importlib
+        import pkgutil
+        from django.core.management.base import BaseCommand
+        from django.apps import apps
+        taken = {n for n in dir(BaseCommand) if not n.startswith("_")} - {"handle", "add_arguments", "help"}
+        for cfg in apps.get_app_configs():
+            if cfg.name.startswith("django."):
+                continue
+            try:
+                pkg = importlib.import_module(cfg.name + ".management.commands")
+            except ImportError:
+                continue
+            for mod in pkgutil.iter_modules(pkg.__path__):
+                cls = importlib.import_module(f"{cfg.name}.management.commands.{mod.name}").Command
+                own = {n for n, v in vars(cls).items() if not n.startswith("_") and callable(v)}   # methods only: settings like requires_system_checks are meant to be set
+                self.assertEqual(own & taken, set(), f"{cfg.name}.{mod.name} redefines {own & taken}")
