@@ -1,12 +1,15 @@
 """Smartflo (Tata Tele) client. Built from the vendor's Postman collection and e-mail; response shapes are read defensively
 because they have not been checked against the live service yet (see docs/PHASE1_INCREMENT4.md).
 
-Never logs or returns tokens, passwords, request bodies or phone numbers."""
+Never logs or returns tokens or passwords. Every call is recorded for support by dialer/apilog.py (phone numbers cut to their last 4 digits)."""
 import logging
+import time
 import re
 
 import requests
 from django.conf import settings
+
+from . import apilog
 
 
 log = logging.getLogger(__name__)
@@ -67,17 +70,22 @@ class SmartfloClient:
     def _send(self, method, path, token, bearer, json, params, base=None):
         headers = {"accept": "application/json", "content-type": "application/json",
                    "Authorization": f"Bearer {token}" if bearer else token}
+        started = time.monotonic()
         try:
             r = self.http.request(method, (base or settings.SMARTFLO_API_BASE).rstrip("/") + path, headers=headers, json=json,
                                   params=params, timeout=settings.SMARTFLO_TIMEOUT_SECONDS)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            apilog.record(method, path, None, int((time.monotonic() - started) * 1000), json, params, error=f"Could not reach Smartflo ({type(exc).__name__})")
             raise SmartfloError("Could not reach Smartflo.")
+        try:
+            body = r.json()
+        except ValueError:
+            body = None
+        apilog.record(method, path, r.status_code, int((time.monotonic() - started) * 1000), json, params,
+                      response=body if body is not None else (getattr(r, "text", "") or "")[:500])
         if r.status_code >= 400:
             raise SmartfloError(f"Smartflo refused the request ({r.status_code}). {_msg(r)}".strip(), status=r.status_code)
-        try:
-            return r.json()
-        except ValueError:
-            return {}
+        return body if body is not None else {}
 
     def _call(self, method, path, token, *, bearer=False, json=None, params=None, base=None):
         """The vendor's examples send the token plain on some endpoints and as 'Bearer <token>' on others, and the document
