@@ -9,6 +9,7 @@ post it twice. So the result is one of:
   rejected   the LMS said no (or the user is not allowed): nothing was posted
   not_sent   the request never left (could not connect): nothing was posted
   unclear    anything else, including a timeout or a reply we do not recognise: the LMS may or may not have it. A person checks first."""
+import json
 import logging
 from decimal import Decimal
 
@@ -80,10 +81,10 @@ def judge(status_code, body):
         return "rejected", f"The LMS did not accept the request (HTTP {status_code}). {_snip(body)}"
     if status_code >= 500 or not 200 <= status_code < 300:
         return "unclear", f"The LMS answered HTTP {status_code}; it may or may not have taken the repayment. {_snip(body)}"
-    txns = body.get("transactions") if isinstance(body, dict) else None
+    txns = body if isinstance(body, list) else (body.get("transactions") if isinstance(body, dict) else None)
     if not isinstance(txns, list) or not txns:
         return "unclear", f"The LMS answered HTTP {status_code} in a form the CRM does not recognise. {_snip(body)}"
-    top = _text(body.get("status")) + " " + _text(body.get("response")) + " " + _text(body.get("responseCode"))
+    top = (_text(body.get("status")) + " " + _text(body.get("response")) + " " + _text(body.get("responseCode"))) if isinstance(body, dict) else ""
     seen_ok = True
     for t in txns:
         t = t if isinstance(t, dict) else {}
@@ -96,11 +97,13 @@ def judge(status_code, body):
         return "rejected", f"The LMS rejected the repayment. {_snip(body)}"
     if seen_ok:
         return "ok", "The LMS took the repayment."
-    return "unclear", f"The LMS answered HTTP {status_code} but did not say plainly that it took the repayment. {_snip(txns[0])}"
+    return "unclear", f"The LMS answered HTTP {status_code} but did not say plainly that it took the repayment. {_snip(txns[0] if isinstance(txns[0], dict) else {})}"
 
 
 def _snip(body):
     """A short, safe summary of the LMS's answer for the Admin: only status words and codes, never the whole body."""
+    if isinstance(body, list):
+        body = body[0] if body and isinstance(body[0], dict) else {}
     if isinstance(body, dict):
         keys = ("status", "responseCode", "response", "message", "error", "errorCode", "description")
         parts = [f"{k}: {str(body[k])[:100]}" for k in keys if body.get(k) not in (None, "")]
@@ -109,7 +112,7 @@ def _snip(body):
 
 
 def post(link):
-    """Send the repayment. Returns (result, note). Never raises for an LMS answer."""
+    """Send the repayment. Returns (result, note, the LMS's whole answer). Never raises for an LMS answer."""
     why = missing()
     if why:
         raise NotReady(why)
@@ -120,15 +123,16 @@ def post(link):
         # Includes "could not resolve" and "refused": the request did not get there. A timeout while connecting is the same.
         log.warning("LMS post not sent: %s", type(exc).__name__)
         if isinstance(exc, requests.ConnectTimeout) or "Connection aborted" not in str(exc):
-            return "not_sent", "The LMS could not be reached. Nothing was posted."
-        return "unclear", "The connection to the LMS broke while posting; it may or may not have taken the repayment."
+            return "not_sent", "The LMS could not be reached. Nothing was posted.", ""
+        return "unclear", "The connection to the LMS broke while posting; it may or may not have taken the repayment.", ""
     except requests.RequestException as exc:
         log.warning("LMS post unclear: %s", type(exc).__name__)
-        return "unclear", "The LMS did not answer in time; it may or may not have taken the repayment."
+        return "unclear", "The LMS did not answer in time; it may or may not have taken the repayment.", ""
     try:
         body = resp.json()
     except ValueError:
         body = None
     result, note = judge(resp.status_code, body)
     log.info("LMS post for %s: HTTP %s -> %s", link.merchant_txn, resp.status_code, result)
-    return result, note
+    reply = f"HTTP {resp.status_code} " + (json.dumps(body, default=str) if body is not None else (getattr(resp, "text", "") or "")[:2000])
+    return result, note, reply[:4000]

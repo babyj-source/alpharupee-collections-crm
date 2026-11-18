@@ -31,6 +31,7 @@ class PaymentLink(models.Model):
     lms_tried_at = models.DateTimeField(null=True, blank=True)       # when the repayment was last sent (or being sent) to the LMS
     lms_tries = models.IntegerField(default=0)                       # how many times the repayment was sent to the LMS
     lms_note = models.CharField(max_length=300, blank=True)         # what the LMS said last (or why nothing was sent), for the Admin
+    lms_reply = models.TextField(blank=True)                        # the LMS's whole answer to the last post (no password in it), for support
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
     checked_at = models.DateTimeField(null=True, blank=True)

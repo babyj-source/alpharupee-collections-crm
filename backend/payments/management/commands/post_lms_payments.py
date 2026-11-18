@@ -43,6 +43,8 @@ class Command(BaseCommand):
                 self.stderr.write(str(exc))
                 return
             self.stdout.write(f"{obj.merchant_txn}: {obj.get_lms_state_display()} | {obj.lms_note}")
+            if obj.lms_reply:
+                self.stdout.write("The LMS's whole answer:\n" + obj.lms_reply)
             return
         posted, failed, left = post_pending()
         self.stdout.write(f"posted {posted}, failed {failed}, waiting {left}")

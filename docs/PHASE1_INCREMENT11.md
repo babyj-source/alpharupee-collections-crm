@@ -36,3 +36,8 @@ The UAT address is the default. For Production: `set-lms-posting.sh url https://
 How the LMS authenticates this user (HTTP Basic is assumed), the exact words of its reply, which `instrument` and bank account code to use, and whether it
 rejects a repeated `instrumentRef`. The first post shows all of this on the Payments screen (Admin) or with `post_lms_payments --link ... --send`.
 Amount posted = the link amount (a link is for a fixed amount). Migration payments 0003.
+
+## First UAT post (18 Nov)
+The LMS answered HTTP 200 with a JSON **list** of the transactions (not `{"transactions": [...]}`), so the CRM called it "unclear" and marked the link Failed,
+which is the safe direction. The reader now accepts both shapes, and the LMS's whole answer is kept on the link (`lms_reply`, payments migration 0004) and printed by
+`post_lms_payments --link ... --send`, so the real success wording can be read and `LMS_POST_OK_WORDS` set from it.

@@ -177,3 +177,26 @@ class PostTests(P):
         with mock.patch("payments.lms.requests.post") as post:
             post_to_lms(stale)
         self.assertFalse(post.called)
+
+    def test_an_answer_that_is_a_list_of_transactions_is_read_and_kept_whole(self):
+        reply = Resp([{"accountId": "A1", "status": "SUCCESS", "responseCode": "0", "response": None}])
+        with mock.patch("payments.lms.requests.post", return_value=reply):
+            post_to_lms(self.link)
+        l = self.fresh()
+        self.assertEqual(l.lms_state, "posted")
+        self.assertTrue(l.lms_reply.startswith("HTTP 200 ["))
+        self.assertIn("SUCCESS", l.lms_reply)
+        self.assertNotIn("pw-secret", l.lms_reply)
+
+    def test_a_list_answer_without_a_plain_success_is_unclear_and_kept_whole(self):
+        reply = Resp([{"accountId": "A1", "status": None, "responseCode": None, "response": None}])
+        with mock.patch("payments.lms.requests.post", return_value=reply):
+            post_to_lms(self.link)
+        l = self.fresh()
+        self.assertEqual(l.lms_state, "failed")
+        self.assertIn('"accountId": "A1"', l.lms_reply)
+
+    def test_a_list_answer_that_says_failed_is_a_refusal(self):
+        with mock.patch("payments.lms.requests.post", return_value=Resp([{"status": "FAILED", "response": "Value date not allowed"}])):
+            post_to_lms(self.link)
+        self.assertIn("rejected", self.fresh().lms_note)

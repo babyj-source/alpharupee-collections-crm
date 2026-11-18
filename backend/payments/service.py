@@ -150,13 +150,14 @@ def post_to_lms(link, user=None, again=False, now=None):
         return link                                       # already posted, being posted, or not allowed to be posted again
     link.refresh_from_db()
     try:
-        result, note = lms.post(link)
+        result, note, reply = lms.post(link)
     except lms.NotReady as exc:
         PaymentLink.objects.filter(pk=link.pk).update(lms_state=PaymentLink.Lms.PENDING, lms_note=str(exc)[:300])
         link.refresh_from_db()
         raise LinkRefused(str(exc))
     link.lms_tries += 1
     link.lms_note = note[:300]
+    link.lms_reply = reply
     if result == "ok":
         link.lms_state, link.lms_posted_at = PaymentLink.Lms.POSTED, timezone.now()
         Activity.objects.create(loan=link.loan, user=None, kind=Activity.Kind.MESSAGE, detail=f"Repayment of ₹{link.amount:,.0f} posted to the LMS")
@@ -166,7 +167,7 @@ def post_to_lms(link, user=None, again=False, now=None):
     else:
         link.lms_state = PaymentLink.Lms.FAILED
         audit(None, "lms_repayment_" + result, user=user, object_type="loan", object_id=link.loan_id, detail=link.merchant_txn)
-    link.save(update_fields=["lms_state", "lms_tries", "lms_note", "lms_posted_at"])
+    link.save(update_fields=["lms_state", "lms_tries", "lms_note", "lms_reply", "lms_posted_at"])
     return link
 
 
