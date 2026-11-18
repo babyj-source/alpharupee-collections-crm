@@ -189,6 +189,20 @@ class PostTests(P):
         self.assertIn("SUCCESS", l.lms_reply)
         self.assertNotIn("pw-secret", l.lms_reply)
 
+    def test_the_real_success_wording_in_the_response_text_is_read_as_posted(self):
+        reply = Resp([{"accountId": "A1", "status": None, "responseCode": None, "response": "S261118076CKPL,SUCCESS,Closed,Loans:MB06"}])
+        with mock.patch("payments.lms.requests.post", return_value=reply):
+            post_to_lms(self.link)
+        l = self.fresh()
+        self.assertEqual(l.lms_state, "posted")
+        self.assertIn("SUCCESS", l.lms_reply)
+
+    def test_a_failure_in_the_response_text_is_still_a_refusal(self):
+        reply = Resp([{"accountId": "A1", "status": None, "responseCode": None, "response": "S261118076CKPL,FAILED,Open,Loans:MB06"}])
+        with mock.patch("payments.lms.requests.post", return_value=reply):
+            post_to_lms(self.link)
+        self.assertEqual(self.fresh().lms_state, "failed")
+
     def test_a_list_answer_without_a_plain_success_is_unclear_and_kept_whole(self):
         reply = Resp([{"accountId": "A1", "status": None, "responseCode": None, "response": None}])
         with mock.patch("payments.lms.requests.post", return_value=reply):

@@ -91,7 +91,9 @@ def judge(status_code, body):
         said = " ".join(_text(t.get(k)) for k in ("status", "responseCode", "response"))
         if any(w in said for w in FAIL_WORDS):
             return "rejected", f"The LMS rejected the repayment. {_snip(t)}"
-        if _text(t.get("status")) not in ok_words and _text(t.get("responseCode")) not in ok_words:
+        # The LMS says it in `response` as a comma list: "S261118076CKPL,SUCCESS,Closed,Loans:MB06" (id, outcome, loan state, product).
+        said_ok = {w.strip() for w in _text(t.get("response")).split(",")}
+        if _text(t.get("status")) not in ok_words and _text(t.get("responseCode")) not in ok_words and not (said_ok & ok_words - {"0", "00", "200"}):
             seen_ok = False
     if any(w in top for w in FAIL_WORDS):
         return "rejected", f"The LMS rejected the repayment. {_snip(body)}"
