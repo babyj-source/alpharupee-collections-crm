@@ -18,12 +18,12 @@ class Command(BaseCommand):
         if not easebuzz.enabled():
             self.stdout.write("Payment links are not switched on; nothing to check.")
             return
-        self.check(days)
+        self.check_links(days)
         posted, failed, left = post_pending()
         if posted or failed or left:
             self.stdout.write(f"LMS: posted {posted}, failed {failed}, waiting {left}")
 
-    def check(self, days):
+    def check_links(self, days):
         links = PaymentLink.objects.filter(state=PaymentLink.State.ACTIVE, created_at__gte=timezone.now() - timedelta(days=days)).select_related("loan")
         checked = changed = failed = 0
         for link in links:
