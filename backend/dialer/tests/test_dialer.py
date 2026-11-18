@@ -799,3 +799,80 @@ class ClientTests(Base):
         self.assertEqual((calls, unparsed), ([], ["bar", "foo"]))
         self.assertEqual(last10("0091 98765 43210"), "9876543210")
         self.assertEqual(last10("123"), "")
+
+
+class ApiLogTests(Base):
+    """Every call to Smartflo leaves one line in the server log, with the API's name, and never a token, a password or a whole number."""
+
+    Http = ClientTests.Http
+
+    def lines(self, cm):
+        import json
+        return [json.loads(m.split("SMARTFLO_API ", 1)[1]) for m in cm.output if "SMARTFLO_API " in m]
+
+    @ON
+    def test_each_call_is_logged_with_its_api_name_status_and_time(self):
+        h = self.Http(body={"success": True, "message": "ok"})
+        c = SmartfloClient(h)
+        with self.assertLogs("crm.smartflo_api", "INFO") as cm:
+            c.session_call("T1", "390326", start=True)
+            c.disposition("T1", "u-1", 153899)
+            c.logout("T1", "390326")
+        got = self.lines(cm)
+        self.assertEqual([x["api"] for x in got], ["Session call (start or end)", "Outcome (disposition) update", "Dialler logout"])
+        self.assertEqual((got[1]["status"], got[1]["method"], got[1]["request"]["body"]), (200, "POST", {"disposition_status": "153899", "unique_id": "u-1"}))
+        self.assertIn('"success":true', got[1]["response"])
+        self.assertIsInstance(got[1]["ms"], int)
+        self.assertTrue(got[1]["at"].endswith("+00:00"))
+
+    @ON
+    def test_no_token_password_or_whole_phone_number_is_ever_logged(self):
+        h = self.Http(body={"access_token": "SECRET-TOKEN", "data": {"customer": "9876543210", "note": "call 919876543210 back"}})
+        with self.assertLogs("crm.smartflo_api", "INFO") as cm:
+            SmartfloClient(h).agent_login("a@b.test", "my-password")
+            SmartfloClient(h).click_to_call("T1", "0606", "9876543210")
+        text = "\n".join(cm.output)
+        for secret in ("SECRET-TOKEN", "my-password", "acct-token", "Bearer", "9876543210", "919876543210"):
+            self.assertNotIn(secret, text)
+        self.assertIn("XXXXXX3210", text)
+        self.assertEqual(self.lines(cm)[0]["request"]["body"]["password"], "***")
+
+    @ON
+    def test_a_bulk_lead_upload_logs_how_many_rows_not_the_customers(self):
+        h = self.Http(body={"success": True})
+        with self.assertLogs("crm.smartflo_api", "INFO") as cm:
+            SmartfloClient(h).bulk_add_leads("259103", [{"field_0": "9876543210", "field_1": "Asha Rao"}, {"field_0": "9123456780", "field_1": "Ravi"}])
+        got = self.lines(cm)[0]
+        self.assertEqual((got["api"], got["request"]["body"]["rows_sent"]), ("Bulk add leads", 2))
+        self.assertNotIn("Asha", str(got))
+        self.assertNotIn("9876543210", str(got))
+
+    @ON
+    def test_a_refusal_and_a_failure_to_connect_are_logged_too(self):
+        with self.assertLogs("crm.smartflo_api", "INFO") as cm:
+            with self.assertRaises(SmartfloError):
+                SmartfloClient(self.Http(status=422, body={"message": "valid call id record not found"})).disposition("T1", "u-1", 5)
+            import requests
+
+            class Down:
+                def request(self, *a, **k):
+                    raise requests.ConnectionError("no route")
+            with self.assertRaises(SmartfloError):
+                SmartfloClient(Down()).live_calls("T1", "0606")
+        got = self.lines(cm)
+        self.assertEqual((got[0]["status"], "valid call id record" in got[0]["response"]), (422, True))
+        self.assertEqual((got[1]["status"], got[1]["api"], "ConnectionError" in got[1]["response"]), (None, "Live calls", True))
+
+    @ON
+    def test_the_live_calls_poll_is_logged_only_when_the_answer_changes(self):
+        from dialer import apilog
+        apilog._last_live.clear()
+        h = self.Http(body={"data": []})
+        c = SmartfloClient(h)
+        with self.assertLogs("crm.smartflo_api", "INFO") as cm:
+            for _ in range(4):
+                c.live_calls("T1", "0606")
+            h.body = {"data": [{"call_id": "c-1", "status": "ringing"}]}
+            c.live_calls("T1", "0606")
+            c.live_calls("T1", "0606")
+        self.assertEqual(len(self.lines(cm)), 2)

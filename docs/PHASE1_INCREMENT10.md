@@ -149,3 +149,10 @@ An outcome saved while the call was still live was sent to Smartflo at once. Sma
 refused, and the retry was then held back for 45 seconds, which delayed the next customer by 35 to 45 seconds. Now the CRM does not send
 while the call is live ("Outcome saved. Smartflo will be told as soon as the call ends."), sends it in the very check that sees the call end,
 and if Smartflo refuses an ended call it tries again after 8 seconds (`RELEASE_RETRY_SECONDS`).
+
+## Follow-up: a record of every Smartflo API call
+Every call the CRM makes to Smartflo now leaves one line in the server log (`SMARTFLO_API {json}`): the API's plain name (Agent sign-in, Session create, Session call,
+Outcome (disposition) update, Live calls, Click to call, Hang up call, Bulk add leads, ...), method and path, what was sent, what came back, the HTTP status and the time taken.
+Tokens, passwords and the Authorization header are never in it, phone numbers keep only their last 4 digits, and a lead upload shows only how many rows went.
+The live-calls check (every few seconds) is logged only when its answer changes. Read it newest first with `sudo bash /opt/crm/current/server-tools/smartflo-api-log.sh [hours] [filter]`;
+it also saves the text in /tmp/smartflo-api-log.txt. Lead-list answers can contain customer names; send the file only to Smartflo or the team. Journal retention follows the server's settings.
