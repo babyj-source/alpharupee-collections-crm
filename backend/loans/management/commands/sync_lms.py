@@ -15,4 +15,4 @@ class Command(BaseCommand):
         run = run_sync(reader)
         if not run.ok:
             raise CommandError(run.error)
-        self.stdout.write(f"Sync ok: read {run.rows_read}, created {run.created}, updated {run.updated}")
+        self.stdout.write(f"Sync ok: read {run.rows_read}, created {run.created}, changed {run.updated}")

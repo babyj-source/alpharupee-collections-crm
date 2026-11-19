@@ -215,7 +215,7 @@ Install the payments timer after Easebuzz is on. Install the WhatsApp timer only
 
 ## 13. Before agents use it: go-live checklist
 
-- [ ] **LMS sync updates only changed rows.** Today it rewrites every account each run (about 15 minutes apart), which keeps the database busy and overwrites mobile numbers the team corrected in the CRM. This is a code change still to be made before the sync timer is switched on.
+- [x] **LMS sync updates only changed rows.** Done: a run now writes only the accounts whose LMS values changed (the dashboard's "updated" count is the number of changed accounts). One thing remains by design: a mobile number corrected by hand in the CRM database is put back to the LMS value the next time that account changes in the LMS or the number differs, because the LMS is the source for borrower numbers. Correct numbers in the LMS, or ask for a CRM-side override to be built.
 - [ ] **Restore test.** RDS, `crm-prod-db`, Actions, Restore to point in time, into a new instance named `crm-prod-db-restore-test` in the same VPC settings; confirm the data is there; delete the test instance.
 - [ ] **Alarm test.** In CloudWatch open any `crm-prod-` alarm, Actions, set state to ALARM, and confirm the e-mail arrives.
 - [ ] **Rollback test.** Make a harmless second release, then run **Roll back Production** (step 15) once in a quiet hour.

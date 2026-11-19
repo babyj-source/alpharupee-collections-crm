@@ -1,7 +1,8 @@
 import logging
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -26,7 +27,10 @@ def _dec(v):
 def closure_amount(acc):
     """What the borrower must pay today to close the loan, built from the LMS view (the LMS has no ready value):
     principal outstanding + interest and penal interest already due + fees due + interest booked but not yet due.
-    total_demand_due already holds principal due, so it is not added again (checked on the live LMS data)."""
+    total_demand_due already holds principal due, so it is not added again (checked on the live LMS data).
+
+    Rounded to a whole rupee the way Encore shows it: 50 paise or more goes up, anything less goes down
+    (checked: 12,962.50 is 12,963 in Encore)."""
     return (
         abs(_dec(acc.get("balance_magnitude")))
         + _dec(acc.get("total_normal_interest_due_magnitude"))
@@ -34,7 +38,7 @@ def closure_amount(acc):
         + _dec(acc.get("total_fee_due_magnitude"))
         + _dec(acc.get("booked_not_due_normal_interest_magnitude"))
         + _dec(acc.get("booked_not_due_penal_interest_magnitude"))
-    ).quantize(Decimal("0.01"))
+    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def _int(v):
@@ -92,8 +96,24 @@ def _contacts(account, customer):
     }
 
 
+def _differs(loan, new):
+    """True when any LMS value in `new` is different from what the CRM already holds for this loan. Each value is read the way the
+    database would read it (a datetime for a date column, 500.5 for 500.50), so an unchanged account is never mistaken for a changed one."""
+    for name, value in new.items():
+        field = Loan._meta.get_field(name)
+        try:
+            value = field.to_python(value)
+        except ValidationError:
+            pass
+        if getattr(loan, name) != value:
+            return True
+    return False
+
+
 def run_sync(reader):
     """Copy accounts, dues and contacts from the LMS into the CRM. Idempotent; never touches CRM-owned fields.
+    Writes only the accounts whose LMS values changed since the last run, so a run every 15 minutes leaves the table alone when
+    nothing happened (`synced_at` is the time the account last changed in the LMS; the run's `finished_at` shows the last check).
 
     Contact details are copied for active loans only; closed loans keep what they had and get no new ones."""
     run = SyncRun.objects.create()
@@ -117,7 +137,7 @@ def run_sync(reader):
         tenant = settings.LMS_TENANT_CODE
         existing = {l.account_id: l for l in Loan.objects.filter(tenant_code=tenant)}
         now = timezone.now()
-        to_create, to_update = [], []
+        to_create, to_update, unchanged = [], [], 0
 
         for aid, acc in accounts.items():
             status = _text(acc.get("operational_status"), 30)
@@ -142,7 +162,11 @@ def run_sync(reader):
                 loan = Loan(tenant_code=tenant, account_id=aid, synced_at=now, **values, **contacts)
                 to_create.append(loan)
             else:
-                for k, v in {**values, **contacts}.items():
+                new = {**values, **contacts}
+                if not _differs(loan, new):
+                    unchanged += 1
+                    continue
+                for k, v in new.items():
                     setattr(loan, k, v)
                 loan.synced_at = now
                 to_update.append(loan)
@@ -156,6 +180,7 @@ def run_sync(reader):
             )
         run.ok, run.rows_read = True, rows_read
         run.created, run.updated = len(to_create), len(to_update)
+        log.info("LMS sync: read %s, created %s, changed %s, unchanged %s", rows_read, len(to_create), len(to_update), unchanged)
     except Exception as exc:  # recorded so the head can see a failing sync; no credentials in the message
         log.exception("LMS sync failed")
         run.error = f"{type(exc).__name__}: {str(exc)[:200]}"
