@@ -58,10 +58,55 @@ class SyncTests(TestCase):
         loan.crm_status, loan.note = "promised", "calls on Friday"
         loan.save()
         run = run_sync(FakeReader([acct("A1", 20, 700), acct("A2", status=2)], [cust("CA1")]))
-        self.assertEqual((run.created, run.updated), (0, 2))
+        self.assertEqual((run.created, run.updated), (0, 1))     # A1 changed; the closed A2 did not
         loan.refresh_from_db()
         self.assertEqual(loan.dpd, 20)
         self.assertEqual((loan.crm_status, loan.note), ("promised", "calls on Friday"))
+
+    def test_a_run_with_nothing_new_writes_no_loan_rows(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        rows = lambda: [acct("U1", 12, Decimal("500.5"), Decimal("10")), acct("U2", status=2)]
+        run_sync(FakeReader(rows(), [cust("CU1")]))
+        before = dict(Loan.objects.values_list("account_id", "synced_at"))
+        with CaptureQueriesContext(connection) as q:
+            run = run_sync(FakeReader(rows(), [cust("CU1")]))
+        self.assertEqual((run.ok, run.created, run.updated), (True, 0, 0))
+        self.assertEqual(before, dict(Loan.objects.values_list("account_id", "synced_at")))
+        self.assertFalse([x for x in q.captured_queries if x["sql"].startswith(('UPDATE "loans_loan"', 'INSERT INTO "loans_loan"'))])
+
+    def test_only_the_accounts_that_changed_are_written_and_the_change_is_seen(self):
+        run_sync(FakeReader([acct("V1", 5, 100), acct("V2", 9, 200), acct("V3", 1, 50)], [cust("CV1"), cust("CV2"), cust("CV3")]))
+        stamp = dict(Loan.objects.values_list("account_id", "synced_at"))
+        run = run_sync(FakeReader([acct("V1", 5, 100), acct("V2", 10, 200), acct("V3", 1, 50)],
+                                  [cust("CV1"), cust("CV2", phone1="9222222222"), cust("CV3")]))
+        self.assertEqual((run.created, run.updated), (0, 1))                       # V2: dpd and mobile changed
+        v2 = Loan.objects.get(account_id="V2")
+        self.assertEqual((v2.dpd, v2.borrower_mobile), (10, "919222222222"))
+        after = dict(Loan.objects.values_list("account_id", "synced_at"))
+        self.assertEqual((after["V1"], after["V3"]), (stamp["V1"], stamp["V3"]))
+        self.assertGreater(after["V2"], stamp["V2"])
+
+    def test_a_change_in_a_contact_only_is_still_written(self):
+        run_sync(FakeReader([acct("W1")], [cust("CW1", ref_phone="9333333333")]))
+        run = run_sync(FakeReader([acct("W1")], [cust("CW1", ref_phone="9444444444")]))
+        self.assertEqual(run.updated, 1)
+        self.assertEqual(Loan.objects.get(account_id="W1").ref1_mobile, "919444444444")
+
+    def test_an_account_that_closes_in_the_lms_is_written_once_then_left_alone(self):
+        run_sync(FakeReader([acct("X1", 30, 400)], [cust("CX1")]))
+        self.assertEqual(run_sync(FakeReader([acct("X1", 0, 0, status=2)], [cust("CX1")])).updated, 1)
+        self.assertEqual(run_sync(FakeReader([acct("X1", 0, 0, status=2)], [cust("CX1")])).updated, 0)
+        self.assertEqual(Loan.objects.get(account_id="X1").operational_status, "2")
+
+    def test_closure_amount_is_rounded_to_the_rupee_like_encore(self):
+        from loans.sync import closure_amount
+        row = lambda paise: {"balance_magnitude": "-1000", "total_normal_interest_due_magnitude": paise}
+        self.assertEqual(closure_amount(row("10.49")), Decimal("1010"))   # under 50 paise: down
+        self.assertEqual(closure_amount(row("10.50")), Decimal("1011"))   # exactly 50 paise: up (Encore shows 12,962.50 as 12,963)
+        self.assertEqual(closure_amount(row("10.51")), Decimal("1011"))   # over 50 paise: up
+        self.assertEqual(closure_amount(row("10")), Decimal("1010"))
+        self.assertEqual(closure_amount({}), Decimal("0"))
 
     def test_closure_amount_is_built_from_the_lms_parts(self):
         # Values taken from a real overdue account: 5,000 principal, 7,875 interest due, 87.50 accrued.
@@ -77,9 +122,9 @@ class SyncTests(TestCase):
         closed.update(booked_not_due_normal_interest_magnitude=Decimal("9"))
         run_sync(FakeReader([row, fees, closed], [cust("CCL1"), cust("CCL2"), cust("CCL3")]))
         a, b, c = (Loan.objects.get(account_id=i) for i in ("CL1", "CL2", "CL3"))
-        self.assertEqual(a.closure_amount, Decimal("12962.50"))
+        self.assertEqual(a.closure_amount, Decimal("12963"))          # 12,962.50 shows as 12,963 in Encore
         self.assertEqual(a.closure_as_on, date(2026, 11, 5))
-        self.assertEqual(b.closure_amount, Decimal("1130.50"))   # 1000 + 60 + 40 + 25 fee + 5.50
+        self.assertEqual(b.closure_amount, Decimal("1131"))   # 1000 + 60 + 40 + 25 fee + 5.50 = 1130.50
         self.assertEqual(c.closure_amount, Decimal("0"))         # closed loans owe nothing
 
     def test_reference_comes_from_the_account_udf_fields(self):
