@@ -1,4 +1,5 @@
 import json
+from io import StringIO
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -350,6 +351,71 @@ class UnmatchedTests(Wa):
         WhatsappMedia.objects.create(message=m, content=b"\x89PNG", size=4)
         self.assertEqual(self.api(self.a1).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 404)
         self.assertEqual(self.api(self.head).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 200)
+
+
+@ON
+class OutboundEventTests(Wa):
+    """What MSG91 really sends for a message leaving our number (Production, Nov 2026): eventName + direction "1", content as a JSON string."""
+    URL = "/api/messaging/whatsapp/webhook?token=s3cret"
+
+    def hook(self, body):
+        return self.api().post(self.URL, json.dumps(body), content_type="application/json")
+
+    @staticmethod
+    def event(number, uuid, name="submitted", content=None, **more):
+        body = {"customerNumber": number, "content": json.dumps(content or {"text": "Paid using the same link?"}), "requestId": "req-" + uuid,
+                "eventName": name, "uuid": uuid, "integratedNumber": "918065075438", "direction": "1", "templateName": "", "messageType": "text",
+                "contentType": "", "text": "", "webhookType": "", "emailId": "agent@alpharupee.in"}
+        body.update(more)
+        return body
+
+    def test_a_message_sent_from_our_number_is_not_a_customer_reply(self):
+        self.hook(self.event("919222222222", "wamid.OUT1"))
+        self.assertEqual(WhatsappMessage.objects.count(), 0)
+        self.assertEqual(WhatsappWebhookLog.objects.get().handled, "outbound")
+
+    def test_a_template_sent_by_another_app_on_the_number_is_not_kept_either(self):
+        tpl = {"to": "919222222222", "type": "template", "template": {"name": "repay_failed_retry_v1", "components": [
+            {"type": "body", "parameters": [{"type": "text", "text": "Ravi Kumar"}]}]}}
+        self.hook(self.event("919222222222", "wamid.OUT2", content=tpl, templateName="repay_failed_retry_v1", messageType="template"))
+        self.hook(self.event("919888800000", "wamid.OUT3", content=tpl, templateName="repay_failed_retry_v1", messageType="template"))
+        self.assertEqual(WhatsappMessage.objects.count(), 0)
+
+    def test_a_real_customer_reply_with_the_same_number_is_still_kept(self):
+        self.hook(self.event("919222222222", "wamid.OUT1"))
+        self.hook({"customerNumber": "919222222222", "bsuid": "IN.1", "uuid": "wamid.IN1_hello", "requestId": "", "customerName": "Ravi",
+                   "contentType": "text", "text": "Paid", "messageType": "text", "webhookType": "", "integratedNumber": "918065075438"})
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.direction, m.text, m.loan_id), ("in", "Paid", self.l2.pk))
+
+    def test_events_update_the_sent_message_by_wamid_or_request_id_and_never_step_backwards(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=Resp(body={"status": "success", "request_id": "req-wamid.OUT9"})):
+            m = send_whatsapp_for_loan(self.l2, self.a2)          # the CRM kept MSG91's request id, not the wamid
+        self.assertEqual(m.provider_ref, "req-wamid.OUT9")
+        self.hook(self.event("919222222222", "wamid.OUT9", "delivered"))
+        m.refresh_from_db()
+        self.assertEqual(m.state, "delivered")
+        self.hook(self.event("919222222222", "wamid.OUT9", "read"))
+        self.hook(self.event("919222222222", "wamid.OUT9", "submitted"))          # late: must not undo "read"
+        self.hook(self.event("919222222222", "wamid.OUT9", "delivered"))
+        m.refresh_from_db()
+        self.assertEqual(m.state, "read")
+        self.assertEqual(WhatsappMessage.objects.filter(direction="in").count(), 0)
+        self.assertEqual(WhatsappWebhookLog.objects.latest("id").handled, "outbound")          # the stale event changed nothing
+        self.assertEqual(WhatsappWebhookLog.objects.order_by("id").first().handled, "status")      # the first "delivered" did
+
+    def test_purge_removes_only_the_echoes_that_were_saved_before_the_fix(self):
+        for uuid, text in (("wamid.OLD1", "Paid using the same link?"), ("wamid.IN7", "Please call me")):
+            WhatsappMessage.objects.create(loan=self.l2, direction="in", kind="text", text=text, state="received", provider_ref=uuid, seen=False)
+        WhatsappWebhookLog.objects.create(body=json.dumps(self.event("919222222222", "wamid.OLD1")), handled="inbound")
+        WhatsappWebhookLog.objects.create(body=json.dumps({"customerNumber": "919222222222", "uuid": "wamid.IN7", "text": "Please call me"}), handled="inbound")
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("purge_whatsapp_echoes", stdout=out)
+        self.assertIn("1 saved customer messages", out.getvalue())
+        self.assertEqual(WhatsappMessage.objects.count(), 2)                  # nothing deleted without --apply
+        call_command("purge_whatsapp_echoes", "--apply", stdout=StringIO())
+        self.assertEqual(list(WhatsappMessage.objects.values_list("provider_ref", flat=True)), ["wamid.IN7"])
 
 
 @ON

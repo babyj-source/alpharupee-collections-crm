@@ -169,8 +169,30 @@ _NUMBER_KEYS = ("customerNumber", "customer_number", "from", "wa_id", "waId", "m
 _TEXT_KEYS = ("text", "body", "message_text", "content", "caption")
 _NAME_KEYS = ("customerName", "customer_name", "profileName", "profile_name")
 _REF_KEYS = ("message_uuid", "uuid", "messageId", "message_id", "request_id", "id")
-_STATUS_VALUES = {"sent": "sent", "delivered": "delivered", "read": "read", "failed": "failed", "undelivered": "failed",
+_STATUS_VALUES = {"submitted": "sent", "sent": "sent", "delivered": "delivered", "read": "read", "failed": "failed", "undelivered": "failed",
                   "delivery_failed": "failed", "rejected": "failed"}
+_REF_FIELDS = ("uuid", "message_uuid", "messageId", "message_id", "requestId", "request_id", "id")
+
+
+def is_outbound_event(payload):
+    """MSG91 also tells us about every message sent FROM the number (by the CRM, by Hello, by other apps on the same number): the body
+    has `eventName` (submitted, delivered, read...) and `direction` "1" with the sent message under `content`. A customer's message has
+    neither, but has a `bsuid`, `customerName` and `contentType`."""
+    if not isinstance(payload, dict):
+        return False
+    direction = str(msg91._find(payload, ("direction",)) or "").lower()
+    return (direction in ("out", "outgoing", "outbound", "1") or str(msg91._find(payload, ("webhookType",)) or "").lower() == "outbound"
+            or bool(str(payload.get("eventName") or "").strip()))
+
+
+def refs_of(payload):
+    """Every id MSG91 puts on a message (its wamid, its request id): the CRM may have kept either of them."""
+    seen = []
+    for k in _REF_FIELDS:
+        v = msg91._find(payload, (k,))
+        if v not in (None, "") and str(v) not in seen:
+            seen.append(str(v))
+    return seen
 
 
 def _mask(text):
@@ -216,19 +238,25 @@ def handle_webhook(payload):
     if isinstance(payload, dict) and payload.get("dryRun") in (True, "true", "True", 1):
         return "test"                    # MSG91's "Test Run" button: sample data, not a customer
     payload = media.expand(payload)
-    direction = str(msg91._find(payload, ("direction",)) or "").lower()
-    ref = msg91._find(payload, _REF_KEYS)
-    status = str(msg91._find(payload, ("status", "event", "message_status")) or "").lower().replace(" ", "_")
+    refs = refs_of(payload)
+    ref = refs[0] if refs else None
+    event = str(payload.get("eventName") or "").strip().lower() if isinstance(payload, dict) else ""
+    status = (event or str(msg91._find(payload, ("status", "event", "message_status")) or "")).lower().replace(" ", "_")
     mapped = _STATUS_VALUES.get(status)
-    if mapped and ref:
-        n = WhatsappMessage.objects.filter(provider_ref=str(ref), direction="out").update(
-            state=mapped, error=(str(msg91._find(payload, ("reason", "error", "errors", "description")) or "")[:200] if mapped == "failed" else ""))
-        if n:
-            return "status"
-    if direction in ("out", "outgoing", "outbound") or str(msg91._find(payload, ("webhookType",)) or "").lower() == "outbound":
-        return "ignored"
-    if ref and WhatsappMessage.objects.filter(provider_ref=str(ref), direction="out").exists():
-        return "ignored"                 # MSG91 echoing back a message the CRM itself sent: not a customer reply
+    n = 0
+    if mapped and refs:
+        qs = WhatsappMessage.objects.filter(provider_ref__in=refs, direction="out")
+        if mapped == "sent":
+            qs = qs.exclude(state__in=("delivered", "read", "failed"))       # events can arrive out of order: never step backwards
+        elif mapped == "delivered":
+            qs = qs.exclude(state="read")
+        n = qs.update(state=mapped, error=(str(msg91._find(payload, ("reason", "error", "errors", "description")) or "")[:200] if mapped == "failed" else ""))
+    if is_outbound_event(payload):
+        return "status" if n else "outbound"          # a message sent FROM our number: never a customer reply
+    if n:
+        return "status"
+    if refs and WhatsappMessage.objects.filter(provider_ref__in=refs, direction="out").exists():
+        return "outbound"                # MSG91 echoing back a message the CRM itself sent: not a customer reply
     number = msg91._find(payload, _NUMBER_KEYS)
     kind, text, file = parse_inbound(payload)
     if number and (text or file):
