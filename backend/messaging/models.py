@@ -98,6 +98,7 @@ class WhatsappMessage(models.Model):
     provider_ref = models.CharField(max_length=120, blank=True, db_index=True)
     error = models.CharField(max_length=200, blank=True)
     mobile_last4 = models.CharField(max_length=4, blank=True)
+    sender_name = models.CharField(max_length=80, blank=True, help_text="inbound with no matching account: the name on the sender's WhatsApp profile")
     sent_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     seen = models.BooleanField(default=True, help_text="inbound: an agent has opened it")
     media_type = models.CharField(max_length=10, blank=True, help_text="image, document, audio, video or sticker when the message carries a file")

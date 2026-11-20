@@ -10,6 +10,7 @@ urlpatterns = [
     path("whatsapp/media/<int:pk>", views.WhatsappMediaView.as_view()),
     path("whatsapp/media/<int:pk>/public", views.WhatsappMediaPublicView.as_view()),
     path("whatsapp/inbox", views.InboxView.as_view()),
+    path("whatsapp/unmatched", views.UnmatchedView.as_view()),
     path("whatsapp/webhook", views.WhatsappWebhookView.as_view()),
     path("whatsapp/webhook-log", views.WhatsappWebhookLogView.as_view()),
     path("sent", views.SentLogView.as_view()),

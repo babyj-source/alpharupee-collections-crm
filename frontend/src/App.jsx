@@ -88,7 +88,7 @@ export default function App() {
         {tab === "loans" && <Loans user={user} />}
         {tab === "customers" && <Loans user={user} mode="customers" />}
         {tab === "callbacks" && <Callbacks user={user} />}
-        {tab === "chats" && <Chats />}
+        {tab === "chats" && <Chats user={user} />}
         {tab === "payments" && <Payments user={user} />}
         {tab === "ptps" && <Ptps user={user} />}
         {tab === "priority" && <Priority user={user} />}
