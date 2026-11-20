@@ -14,7 +14,8 @@ const when = (t) => {
 const initials = (n) => (n || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
 
 // WhatsApp-Web style screen: conversations on the left, the open chat on the right, with Call from the chat header.
-export default function Chats() {
+export default function Chats({ user }) {
+  const isHead = user?.role === "head" || user?.role === "admin";
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
   const [q, setQ] = useState("");
@@ -28,8 +29,12 @@ export default function Chats() {
   const [ending, setEnding] = useState(false);
   const [waCalling, setWaCalling] = useState(false);
   const poll = useRef(null);
+  const [view, setView] = useState("chats");    // "chats" | "unmatched" (Head and Admin)
+  const [un, setUn] = useState({ unread: 0, groups: [] });
+  const [selUn, setSelUn] = useState(null);     // key of the open unmatched sender
 
-  const load = () => api("/messaging/whatsapp/inbox").then(setRows).catch((e) => setError(e.message));
+  const loadUn = () => isHead && api("/messaging/whatsapp/unmatched").then(setUn).catch(() => {});
+  const load = () => { loadUn(); return api("/messaging/whatsapp/inbox").then(setRows).catch((e) => setError(e.message)); };
   useEffect(() => {
     api("/meta").then(setMeta).catch(() => {});
     load();
@@ -96,14 +101,51 @@ export default function Chats() {
   const fresh = found.filter((l) => !haveChat.has(l.id));
   const borrower = loan && (loan.contacts || []).find((c) => c.key === "borrower");
 
+  const unKey = (g) => `${g.last4}|${g.name}`;
+  const unName = (g) => g.name || "Unknown sender";
+  const shownUn = term ? un.groups.filter((g) => unName(g).toLowerCase().includes(term) || g.last4.includes(term)) : un.groups;
+  const openUn = un.groups.find((g) => unKey(g) === selUn);
+  async function openUnmatched(g) {
+    setSelUn(unKey(g));
+    if (g.unread > 0) {
+      try { await api("/messaging/whatsapp/unmatched", { method: "POST", body: { last4: g.last4, name: g.name } }); loadUn(); } catch (e) { setError(e.message); }
+    }
+  }
+  const showChats = () => { setView("chats"); setSelUn(null); };
+
   return (
-    <div className={`wweb${sel ? " chat-open" : ""}`}>
+    <div className={`wweb${(view === "unmatched" ? selUn : sel) ? " chat-open" : ""}`}>
       <div className="wweb-list card">
+        {isHead && (
+          <div className="row wweb-tabs">
+            <button className={view === "chats" ? "" : "ghost"} onClick={showChats}>Chats</button>
+            <button className={view === "unmatched" ? "" : "ghost"} onClick={() => setView("unmatched")}>
+              Unmatched{un.unread > 0 && <span className="chip due"> {un.unread}</span>}
+            </button>
+          </div>
+        )}
         <div className="wweb-search">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or account number" aria-label="Search conversations" />
         </div>
         <div className="wweb-rows" role="list">
-          {shownRows.map((r) => (
+          {view === "unmatched" && (
+            <>
+              {shownUn.map((g) => (
+                <button key={unKey(g)} role="listitem" className={`wweb-row${selUn === unKey(g) ? " on" : ""}`} onClick={() => openUnmatched(g)}>
+                  <span className="avatar new">{initials(g.name)}</span>
+                  <span className="wweb-main">
+                    <span className="wweb-top"><strong>{unName(g)}</strong><span className="muted small">{when(g.last_at)}</span></span>
+                    <span className="wweb-bottom">
+                      <span className="muted small wweb-last">···{g.last4} · {g.last_text}</span>
+                      {g.unread > 0 && <span className="chip due">{g.unread}</span>}
+                    </span>
+                  </span>
+                </button>
+              ))}
+              {shownUn.length === 0 && <p className="muted small pad">{term ? "No sender matches." : "No messages from unknown numbers."}</p>}
+            </>
+          )}
+          {view === "chats" && shownRows.map((r) => (
             <button key={r.loan_id} role="listitem" className={`wweb-row${sel?.id === r.loan_id ? " on" : ""}`}
                     onClick={() => open(r.loan_id, r.account_id, r.borrower_name)}>
               <span className="avatar">{initials(r.borrower_name)}</span>
@@ -116,9 +158,9 @@ export default function Chats() {
               </span>
             </button>
           ))}
-          {shownRows.length === 0 && !fresh.length && <p className="muted small pad">{term ? "No conversation matches." : "No WhatsApp conversations yet. Search an account above to start one."}</p>}
-          {fresh.length > 0 && <div className="wweb-sub muted small">Start a new chat</div>}
-          {fresh.map((l) => (
+          {view === "chats" && shownRows.length === 0 && !fresh.length && <p className="muted small pad">{term ? "No conversation matches." : "No WhatsApp conversations yet. Search an account above to start one."}</p>}
+          {view === "chats" && fresh.length > 0 && <div className="wweb-sub muted small">Start a new chat</div>}
+          {view === "chats" && fresh.map((l) => (
             <button key={l.id} className="wweb-row" onClick={() => { open(l.id, l.account_id, l.borrower_name); setQ(""); }}>
               <span className="avatar new">{initials(l.borrower_name)}</span>
               <span className="wweb-main">
@@ -131,8 +173,32 @@ export default function Chats() {
       </div>
 
       <div className="wweb-chat card">
-        {!sel && <div className="wweb-empty muted"><p>Pick a conversation, or search an account to start one.</p></div>}
-        {sel && (
+        {view === "unmatched" && !openUn && <div className="wweb-empty muted"><p>Pick a sender. These numbers are not on any account.</p></div>}
+        {view === "unmatched" && openUn && (
+          <>
+            <div className="wweb-head">
+              <button className="ghost wweb-back" onClick={() => setSelUn(null)} aria-label="Back to senders">Back</button>
+              <span className="avatar new">{initials(openUn.name)}</span>
+              <div className="grow">
+                <strong>{unName(openUn)}</strong>
+                <div className="muted small">Number ending {openUn.last4} · not on any account</div>
+              </div>
+            </div>
+            <p className="muted small pad">This number is not a borrower or alternate mobile on any account, and the CRM keeps only the last four digits, so it cannot be answered here. Reply from the MSG91 Hello inbox, or find the account by name and add the number to it.</p>
+            <div className="wa-full"><div className="chat" aria-label="Messages from this sender">
+              {openUn.messages.map((m) => (
+                <div key={m.id} className="bubble in">
+                  {m.kind === "button" && <div className="bubble-tag">Tapped a button</div>}
+                  {m.media && <a className="bubble-file" href={m.media.url} target="_blank" rel="noreferrer">{m.media.name || m.media.label}</a>}
+                  {(m.text || !m.media) && <div className="bubble-text">{m.text}</div>}
+                  <div className="bubble-meta">{when(m.at)}</div>
+                </div>
+              ))}
+            </div></div>
+          </>
+        )}
+        {view === "chats" && !sel && <div className="wweb-empty muted"><p>Pick a conversation, or search an account to start one.</p></div>}
+        {view === "chats" && sel && (
           <>
             <div className="wweb-head">
               <button className="ghost wweb-back" onClick={() => { setSel(null); setLoan(null); }} aria-label="Back to conversations">Back</button>

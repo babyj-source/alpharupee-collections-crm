@@ -270,6 +270,39 @@ class InboxView(APIView):
         return Response(out[:100])
 
 
+class UnmatchedView(APIView):
+    """Head or Admin: customer messages from numbers that are on no account (an old customer, a number the LMS does not hold, a
+    colleague testing). Grouped by sender. The CRM keeps only the last four digits and the WhatsApp profile name, so these cannot be
+    answered from here; they are for someone to look into. GET lists them, POST marks one sender's messages as read."""
+
+    permission_classes = [IsHead]
+
+    def get(self, request):
+        msgs = list(WhatsappMessage.objects.filter(loan__isnull=True, direction="in").order_by("-created_at", "-id")[:500])
+        groups, order = {}, []
+        for m in msgs:
+            key = (m.mobile_last4, m.sender_name)
+            g = groups.get(key)
+            if g is None:
+                label = m.text or (media.label_for(m.media_type) if m.media_type else "") or "Message"
+                g = groups[key] = {"last4": m.mobile_last4, "name": m.sender_name, "last_text": label[:120], "last_at": m.created_at, "unread": 0, "messages": []}
+                order.append(key)
+            if not m.seen:
+                g["unread"] += 1
+            g["messages"].append(_wa_row(m))
+        out = []
+        for key in order[:100]:
+            g = groups[key]
+            g["messages"].reverse()
+            out.append(g)
+        return Response({"unread": sum(g["unread"] for g in out), "groups": out})
+
+    def post(self, request):
+        last4, name = str(request.data.get("last4") or ""), str(request.data.get("name") or "")
+        n = WhatsappMessage.objects.filter(loan__isnull=True, direction="in", seen=False, mobile_last4=last4, sender_name=name).update(seen=True)
+        return Response({"marked": n})
+
+
 def _file_response(m):
     """The stored file of one message. Shown in the page only when it is a kind the browser cannot run; anything else downloads."""
     row = WhatsappMedia.objects.filter(message=m).first()
@@ -297,9 +330,12 @@ class WhatsappMediaView(APIView):
 
     def get(self, request, pk):
         m = WhatsappMessage.objects.filter(pk=pk).exclude(media_type="").first()
-        if m is None or m.loan_id is None:
+        if m is None:
             return HttpResponseNotFound()
-        if not scoped(request.user, grants=True).filter(pk=m.loan_id).exists():
+        if m.loan_id is None:
+            if not request.user.is_head:         # a file from a sender with no account: only Head and Admin see it, as with the message
+                return HttpResponseNotFound()
+        elif not scoped(request.user, grants=True).filter(pk=m.loan_id).exists():
             return HttpResponseNotFound()
         return _file_response(m) or HttpResponseNotFound()
 

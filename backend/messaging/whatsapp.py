@@ -167,6 +167,7 @@ def send_chat_attachment(loan, user, upload, caption="", base_url=""):
 _DIGITS = re.compile(r"\d{10,}")
 _NUMBER_KEYS = ("customerNumber", "customer_number", "from", "wa_id", "waId", "mobile", "mobile_number", "recipient", "contact", "msisdn")
 _TEXT_KEYS = ("text", "body", "message_text", "content", "caption")
+_NAME_KEYS = ("customerName", "customer_name", "profileName", "profile_name")
 _REF_KEYS = ("message_uuid", "uuid", "messageId", "message_id", "request_id", "id")
 _STATUS_VALUES = {"sent": "sent", "delivered": "delivered", "read": "read", "failed": "failed", "undelivered": "failed",
                   "delivery_failed": "failed", "rejected": "failed"}
@@ -212,6 +213,8 @@ def parse_inbound(payload):
 
 def handle_webhook(payload):
     """Apply one MSG91 webhook body. Returns a short label for the log: inbound, status, ignored."""
+    if isinstance(payload, dict) and payload.get("dryRun") in (True, "true", "True", 1):
+        return "test"                    # MSG91's "Test Run" button: sample data, not a customer
     payload = media.expand(payload)
     direction = str(msg91._find(payload, ("direction",)) or "").lower()
     ref = msg91._find(payload, _REF_KEYS)
@@ -222,8 +225,10 @@ def handle_webhook(payload):
             state=mapped, error=(str(msg91._find(payload, ("reason", "error", "errors", "description")) or "")[:200] if mapped == "failed" else ""))
         if n:
             return "status"
-    if direction in ("out", "outgoing", "outbound"):
+    if direction in ("out", "outgoing", "outbound") or str(msg91._find(payload, ("webhookType",)) or "").lower() == "outbound":
         return "ignored"
+    if ref and WhatsappMessage.objects.filter(provider_ref=str(ref), direction="out").exists():
+        return "ignored"                 # MSG91 echoing back a message the CRM itself sent: not a customer reply
     number = msg91._find(payload, _NUMBER_KEYS)
     kind, text, file = parse_inbound(payload)
     if number and (text or file):
@@ -231,8 +236,11 @@ def handle_webhook(payload):
         last4 = re.sub(r"\D", "", str(number))[-4:]
         if ref and WhatsappMessage.objects.filter(provider_ref=str(ref), direction="in").exists():
             return "ignored"          # MSG91 retried the same message
+        # With no account to show it on, the sender's profile name is all an admin has to go on; the number itself is never kept.
+        who = "" if loan else re.sub(r"\s+", " ", str(msg91._find(payload, _NAME_KEYS) or "")).strip()[:80]
         m = WhatsappMessage.objects.create(
             loan=loan, direction="in", kind=kind, text=text[:2000], state="received", provider_ref=str(ref or "")[:120], mobile_last4=last4, seen=False,
+            sender_name=who,
             media_type=file["type"] if file else "", media_name=file["name"] if file else "", media_mime=file["mime"] if file else "",
             media_url=file["url"][:2000] if file else "")
         if file and file["url"]:

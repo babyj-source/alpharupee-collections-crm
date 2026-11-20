@@ -243,6 +243,19 @@ class WebhookTests(Wa):
         self.hook({"customerNumber": "919222222222", "text": "our own", "uuid": "out-1", "direction": "OUT"})
         self.assertEqual(WhatsappMessage.objects.count(), 1)
 
+    def test_a_message_the_crm_sent_is_not_stored_again_when_msg91_reports_it_back(self):
+        with mock.patch("messaging.msg91.requests.post", return_value=Resp()):
+            m = send_whatsapp_for_loan(self.l2, self.a2)
+        # the outbound event carries the customer's number and our text, tagged outbound, with the id of the sent message
+        self.hook({"customerNumber": "919222222222", "contentType": "text", "text": "Your loan payment", "uuid": "wamid-1", "webhookType": "outbound"})
+        # the same, with no tag at all: the id gives it away
+        self.hook({"customerNumber": "919222222222", "contentType": "text", "text": "Your loan payment", "uuid": "wamid-1"})
+        # a tagged one whose id we have never seen (sent from MSG91's own screen, say) is ours too, not the customer's
+        self.hook({"customerNumber": "919222222222", "contentType": "text", "text": "Sent from Hello", "uuid": "wamid-2", "webhookType": "outbound"})
+        self.assertEqual(WhatsappMessage.objects.filter(direction="in").count(), 0)
+        self.assertEqual(WhatsappMessage.objects.filter(direction="out").count(), 1)
+        self.assertEqual(m.pk, WhatsappMessage.objects.get(direction="out").pk)
+
     def test_delivery_status_updates_the_sent_message(self):
         with mock.patch("messaging.msg91.requests.post", return_value=Resp()):
             m = send_whatsapp_for_loan(self.l2, self.a2)
@@ -268,6 +281,75 @@ class WebhookTests(Wa):
         admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
         self.assertEqual(self.api(self.head).get("/api/messaging/whatsapp/webhook-log").status_code, 403)
         self.assertEqual(len(self.api(admin).get("/api/messaging/whatsapp/webhook-log").json()), 30)
+
+
+@ON
+class UnmatchedTests(Wa):
+    """Replies from numbers that are on no account (the Production webhook's first real bodies, Nov 2026)."""
+    URL = "/api/messaging/whatsapp/webhook?token=s3cret"
+    LIST = "/api/messaging/whatsapp/unmatched"
+
+    def hook(self, body):
+        return self.api().post(self.URL, json.dumps(body), content_type="application/json")
+
+    def stranger(self, text="Hi hi hi", uuid="wamid.A_hello", name="Baby Jose", number="919620954962", **more):
+        body = {"customerNumber": number, "customerName": name, "contentType": "text", "text": text, "uuid": uuid, "messageType": "text"}
+        body.update(more)
+        return self.hook(body)
+
+    def test_a_stranger_is_kept_with_the_profile_name_and_last_four_digits_only(self):
+        self.stranger()
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.loan_id, m.sender_name, m.mobile_last4, m.text), (None, "Baby Jose", "4962", "Hi hi hi"))
+        self.assertEqual(WhatsappWebhookLog.objects.get().handled, "inbound-unmatched")
+        self.assertNotIn("919620954962", WhatsappWebhookLog.objects.get().body)
+
+    def test_the_name_is_not_stored_for_a_borrower_the_account_already_has_one(self):
+        self.stranger(number="919222222222", name="Somebody Else")
+        m = WhatsappMessage.objects.get()
+        self.assertEqual((m.loan_id, m.sender_name), (self.l2.pk, ""))
+
+    def test_head_and_admin_see_them_grouped_by_sender_agents_do_not(self):
+        self.stranger("first", "u1")
+        self.stranger("second", "u2")
+        self.stranger("", "u3", name="DIPANKAR DAS", number="916000318961", contentType="button",
+                      button=json.dumps({"payload": "Already paid", "text": "Already paid"}))
+        self.assertEqual(self.api(self.a1).get(self.LIST).status_code, 403)
+        self.assertEqual(self.api().get(self.LIST).status_code in (401, 403), True)
+        d = self.api(self.head).get(self.LIST).json()
+        self.assertEqual(d["unread"], 3)
+        self.assertEqual([(g["name"], g["last4"], g["unread"]) for g in d["groups"]], [("DIPANKAR DAS", "8961", 1), ("Baby Jose", "4962", 2)])
+        self.assertEqual([m["text"] for m in d["groups"][1]["messages"]], ["first", "second"])      # oldest first inside a conversation
+        self.assertEqual(d["groups"][0]["messages"][0]["kind"], "button")
+        self.assertEqual(d["groups"][0]["last_text"], "Already paid")
+        admin = type(self.head).objects.create_user("ad2@x.com", "pw", name="Ad", mobile="919000000008", role="admin")
+        self.assertEqual(self.api(admin).get(self.LIST).status_code, 200)
+
+    def test_matched_messages_never_appear_in_the_unmatched_list(self):
+        self.stranger(number="919222222222", uuid="m1")
+        self.assertEqual(self.api(self.head).get(self.LIST).json(), {"unread": 0, "groups": []})
+
+    def test_opening_one_sender_marks_only_that_sender_read(self):
+        self.stranger("a", "u1")
+        self.stranger("b", "u2", name="Other", number="919111100000")
+        r = self.api(self.head).post(self.LIST, {"last4": "4962", "name": "Baby Jose"}, format="json")
+        self.assertEqual(r.json(), {"marked": 1})
+        d = self.api(self.head).get(self.LIST).json()
+        self.assertEqual(d["unread"], 1)
+        self.assertEqual(self.api(self.a1).post(self.LIST, {"last4": "0000", "name": ""}, format="json").status_code, 403)
+
+    def test_msg91s_test_run_is_not_kept_as_a_customer_message(self):
+        self.hook({"customerNumber": "9181588XXXXX", "customerName": "Test User", "text": "sample", "uuid": "wamid.sample-uuid-for-webhook-test", "dryRun": True})
+        self.assertEqual(WhatsappMessage.objects.count(), 0)
+        self.assertEqual(WhatsappWebhookLog.objects.get().handled, "test")
+
+    def test_a_file_from_a_stranger_is_for_head_only(self):
+        m = WhatsappMessage.objects.create(loan=None, direction="in", kind="media", state="received", media_type="image", media_mime="image/png",
+                                           mobile_last4="4962", sender_name="Baby Jose", seen=False)
+        from messaging.models import WhatsappMedia
+        WhatsappMedia.objects.create(message=m, content=b"\x89PNG", size=4)
+        self.assertEqual(self.api(self.a1).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 404)
+        self.assertEqual(self.api(self.head).get(f"/api/messaging/whatsapp/media/{m.pk}").status_code, 200)
 
 
 @ON
