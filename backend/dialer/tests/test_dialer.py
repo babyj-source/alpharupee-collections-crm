@@ -515,8 +515,9 @@ class SessionTests(DialerBase):
         self.assertIn("logout", self.fake.names())
 
     def test_status_endpoint(self):
-        self.assertEqual(self.api(self.a1).get("/api/dialer/status").json(),
-                         {"enabled": True, "in_window": True, "window": "08:00-19:00", "agent_ready": True, "can_click_to_call": True})
+        got = self.api(self.a1).get("/api/dialer/status").json()
+        got.pop("pause_reasons")
+        self.assertEqual(got, {"enabled": True, "in_window": True, "window": "08:00-19:00", "agent_ready": True, "can_click_to_call": True})
         self.assertTrue(self.api(self.head).get("/api/meta").json()["dialer_enabled"])
 
 

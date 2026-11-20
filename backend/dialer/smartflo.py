@@ -16,9 +16,10 @@ log = logging.getLogger(__name__)
 
 
 class SmartfloError(Exception):
-    def __init__(self, message, status=None):
+    def __init__(self, message, status=None, body=None):
         super().__init__(message)
         self.status = status
+        self.body = body          # what Smartflo replied, when it was JSON (never holds a token: those are only in 200 replies)
 
 
 class SmartfloDisabled(SmartfloError):
@@ -84,7 +85,7 @@ class SmartfloClient:
         apilog.record(method, path, r.status_code, int((time.monotonic() - started) * 1000), json, params,
                       response=body if body is not None else (getattr(r, "text", "") or "")[:500])
         if r.status_code >= 400:
-            raise SmartfloError(f"Smartflo refused the request ({r.status_code}). {_msg(r)}".strip(), status=r.status_code)
+            raise SmartfloError(f"Smartflo refused the request ({r.status_code}). {_msg(r)}".strip(), status=r.status_code, body=body)
         return body if body is not None else {}
 
     def _call(self, method, path, token, *, bearer=False, json=None, params=None, base=None):
@@ -226,14 +227,37 @@ class SmartfloClient:
     # ---- the agent's own token
     def session_create(self, token, campaign_id, name):
         """Smartflo answers 422 "You are already logged in to this campaign. Initiate session call to start dialing." when the agent
-        still has a session from before. That is fine: the next step (the session call) is what starts the dialling."""
-        try:
+        still has a session from before. That is fine: the next step (the session call) is what starts the dialling.
+        It answers 422 "You can only be logged in to one campaign at a time ..." (with the campaign in `data`) when the agent is still
+        signed in to another one, for example the account's own "Collection Campaign" opened in Smartflo's agent screen. The agent has
+        just typed their password to start THIS campaign, so the other sign-in is closed and the start is tried once more. The names of
+        the campaigns left come back as `left`."""
+        def create():
             return self._call("POST", "/v1/dialer/session/create", token, bearer=True,
                               json={"campaign_id": _id(campaign_id), "campaign_name": name})
+        try:
+            return create()
         except SmartfloError as exc:
-            if "already logged in" in str(exc).lower():
+            said = str(exc).lower()
+            if "already logged in" in said:
                 return {"success": True, "already_logged_in": True}
-            raise
+            if "one campaign at a time" not in said:
+                raise
+            others = [d for d in ((exc.body or {}).get("data") or []) if isinstance(d, dict) and d.get("id") not in (None, "")]
+            if not others:
+                raise
+            for d in others:
+                try:
+                    self.logout(token, d["id"])
+                except SmartfloError as out:
+                    raise SmartfloError(f"You are still signed in to the Smartflo campaign \u201c{d.get('name') or d['id']}\u201d and the CRM could not sign you out of it ({str(out)[:120]}). "
+                                        "Sign out of it in Smartflo, then start again.", status=exc.status) from out
+            try:
+                create()
+            except SmartfloError as again:
+                if "already logged in" not in str(again).lower():
+                    raise
+            return {"success": True, "left": [str(d.get("name") or d["id"]) for d in others]}
 
     def session_call(self, token, campaign_id, start=True):
         """One session call per agent, for the whole shift (not one per customer). Smartflo answers "Agent is on a call." if one is running."""

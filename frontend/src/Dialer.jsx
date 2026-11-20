@@ -17,6 +17,7 @@ export default function Dialer() {
   const [push, setPush] = useState(null); // result of the last send to Smartflo: {sent, total, error}
   const [open, setOpen] = useState(null);
   const [sf, setSf] = useState(null); // what Smartflo's own lead list says about this agent's customers
+  const [pauseReason, setPauseReason] = useState("");
   const shown = useRef(null); // id of the account the drawer was last opened for, so a new call opens it once
 
   const refresh = useCallback(() => api("/dialer/session").then(setSession).catch((e) => setError(e.message)), []);
@@ -49,6 +50,7 @@ export default function Dialer() {
       setPush(r.push);
       shown.current = null;
       await refresh();
+      if (r.left?.length) setNotice(`You were signed out of the Smartflo campaign \u201c${r.left.join("\u201d, \u201c")}\u201d so this one could start.`);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function sendAgain() {
@@ -75,6 +77,16 @@ export default function Dialer() {
     try { await api("/dialer/call/hangup", { method: "POST", body: { loan_id: loanId } }); refresh(); }
     catch (err) { setError(err.message); }
   }
+  async function pause() {
+    setError(""); setNotice(""); setBusy(true);
+    try { await api("/dialer/session/pause", { method: "POST", body: { reason: pauseReason } }); setPauseReason(""); await refresh(); }
+    catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+  async function resume() {
+    setError(""); setNotice(""); setBusy(true);
+    try { await api("/dialer/session/resume", { method: "POST" }); await refresh(); setNotice("Campaign resumed. Smartflo will ring your next customer."); }
+    catch (err) { setError(err.message); await refresh(); } finally { setBusy(false); }
+  }
   async function stop() {
     setError("");
     try { await api("/dialer/session/stop", { method: "POST" }); setOpen(null); await refresh(); }
@@ -97,7 +109,7 @@ export default function Dialer() {
 
   return (
     <div className="stack">
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && s?.active && <p className="error" role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
 
       {!s?.active && (
@@ -138,6 +150,7 @@ export default function Dialer() {
             </label>
             <p className="muted small">Used once to sign you in to Smartflo. The CRM never stores it. Log an outcome after every call to get the next one.</p>
             <button disabled={busy || !campaign || !status.enabled || !status.agent_ready || !status.in_window}>{busy ? "Starting…" : campaign ? `Start ${pools.find((p) => p.key === campaign)?.label || "campaign"}` : "Pick a campaign first"}</button>
+            {error && <p className="error" role="alert">{error}</p>}
           </form>
         </>
       )}
@@ -151,8 +164,25 @@ export default function Dialer() {
                 <span className="muted small">Smartflo signs you out around {clock(s.expires_at)}; start again then.</span>
               </div>
               <span className="grow" />
+              {s.paused ? (
+                <>
+                  <span className="chip today">Paused · {s.paused.label || "break"} · since {clock(s.paused.since)}</span>
+                  <button disabled={busy} onClick={resume}>{busy ? "Resuming…" : "Resume campaign"}</button>
+                </>
+              ) : (
+                <>
+                  <select aria-label="Reason for pausing" value={pauseReason} onChange={(e) => setPauseReason(e.target.value)}>
+                    <option value="">Pause reason…</option>
+                    {(status.pause_reasons || []).map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select>
+                  <button className="ghost" disabled={busy || !pauseReason || !!s.call || s.awaiting_outcome}
+                          title={s.call || s.awaiting_outcome ? "Finish the call and log its outcome first" : "Stop Smartflo ringing new customers until you resume"}
+                          onClick={pause}>{busy ? "Pausing…" : "Pause campaign"}</button>
+                </>
+              )}
               <button onClick={stop}>Stop campaign</button>
             </div>
+            {s.paused && <p role="status" className="small">The campaign is paused: Smartflo is not ringing new customers. Press Resume when you are back. Smartflo signs you out at {clock(s.expires_at)}; if that passes while you are paused, start the campaign again.</p>}
             {push && !push.error && (
               <p role="status" className="small">{push.sent > 0 ? `${num(push.sent)} of your customers were sent to Smartflo.`
                 : push.total === 0 ? "You have no new customers in this campaign, so nothing was sent. Smartflo dials whoever is already in its list." : ""}</p>
@@ -194,7 +224,8 @@ export default function Dialer() {
           </section>
 
           <section className={`card nowcall${s.call ? " live" : ""}`} aria-live="polite">
-            {!s.current && !s.call && <p className="muted">Waiting for Smartflo to dial the next customer. It starts by itself; this page updates every few seconds.</p>}
+            {!s.current && !s.call && s.paused && <p className="muted">Paused. No customer will be rung until you resume.</p>}
+            {!s.current && !s.call && !s.paused && <p className="muted">Waiting for Smartflo to dial the next customer. It starts by itself; this page updates every few seconds.</p>}
             {s.call && !s.current && <p>On a call with a number that is not on any CRM account. You can end the call normally.</p>}
             {s.current && (
               <>
