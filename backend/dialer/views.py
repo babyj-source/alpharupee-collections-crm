@@ -639,7 +639,8 @@ class PauseSerializer(serializers.Serializer):
 
 class SessionPauseView(APIView):
     """The agent pauses the campaign (a break, a meeting, a fault): Smartflo stops ringing new customers, the agent stays signed in.
-    Not while a call is on or its outcome is still owed: finish that first. The reason is kept so a head can see where the time went."""
+    Allowed at any moment, even mid-call (a running campaign keeps the agent on or between calls almost all the time): the call in progress finishes
+    and its outcome is still logged as usual; only new customers stop. The reason is kept so a head can see where the time went."""
 
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "dial"
@@ -655,8 +656,7 @@ class SessionPauseView(APIView):
             return bad("The campaign is already paused. Press Resume to carry on.")
         if not enabled():
             return bad("The dialler is switched off on this server.")
-        if s.on_call or (s.last_unique_id and not s.released):
-            return bad("Finish the call and log its outcome first, then pause.")
+        busy = bool(s.on_call or (s.last_unique_id and not s.released))
         try:
             get_client().session_call(unseal(s.token_enc), s.campaign.smartflo_campaign_id, start=False)
         except SmartfloError as exc:
@@ -665,7 +665,7 @@ class SessionPauseView(APIView):
         s.save(update_fields=["paused_at", "pause_reason"])
         DialerPause.objects.create(session=s, user=request.user, reason=reason)
         audit(request, "dialer_paused", user=request.user, object_type="campaign", object_id=s.campaign_id, detail=PAUSE_LABELS[reason])
-        return Response({"paused": {"since": s.paused_at, "reason": reason, "label": PAUSE_LABELS[reason]}})
+        return Response({"paused": {"since": s.paused_at, "reason": reason, "label": PAUSE_LABELS[reason]}, "after_call": busy})
 
 
 class SessionResumeView(APIView):

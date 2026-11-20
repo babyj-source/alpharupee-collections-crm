@@ -143,15 +143,22 @@ class PauseTests(DialerBase):
         self.assertEqual(self.pause(reason="because").status_code, 400)
         self.assertEqual(DialerSession.objects.get().paused_at, None)
 
-    def test_no_pause_while_a_call_is_on_or_its_outcome_is_owed(self):
+    def test_pause_is_allowed_during_a_call_or_while_an_outcome_is_owed(self):
         self.start()
         DialerSession.objects.update(on_call=True)
         r = self.pause()
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("Finish the call", r.json()["detail"])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()["after_call"])
+        self.assertEqual([c for c in self.fake.calls if c[0] == "session_call"][-1][3], False)
+        self.post(self.a1, "session/resume")
         DialerSession.objects.update(on_call=False, last_unique_id="u1", released=False)
-        self.assertEqual(self.pause().status_code, 400)
-        self.assertNotIn(False, [c[3] for c in self.fake.calls if c[0] == "session_call"])               # Smartflo was never told
+        r = self.pause(reason="tea")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()["after_call"])
+
+    def test_a_pause_between_calls_says_nothing_is_pending(self):
+        self.start()
+        self.assertFalse(self.pause().json()["after_call"])
 
     def test_if_smartflo_refuses_the_pause_nothing_changes(self):
         self.start()

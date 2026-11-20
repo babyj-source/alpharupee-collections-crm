@@ -79,7 +79,11 @@ export default function Dialer() {
   }
   async function pause() {
     setError(""); setNotice(""); setBusy(true);
-    try { await api("/dialer/session/pause", { method: "POST", body: { reason: pauseReason } }); setPauseReason(""); await refresh(); }
+    try {
+      const r = await api("/dialer/session/pause", { method: "POST", body: { reason: pauseReason } });
+      setPauseReason(""); await refresh();
+      if (r && r.after_call) setNotice("Paused. Finish the call you are on and log its outcome; no new customer will be rung until you resume.");
+    }
     catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function resume() {
@@ -175,8 +179,8 @@ export default function Dialer() {
                     <option value="">Pause reason…</option>
                     {(status.pause_reasons || []).map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
                   </select>
-                  <button className="ghost" disabled={busy || !pauseReason || !!s.call || s.awaiting_outcome}
-                          title={s.call || s.awaiting_outcome ? "Finish the call and log its outcome first" : "Stop Smartflo ringing new customers until you resume"}
+                  <button className="ghost" disabled={busy || !pauseReason}
+                          title={!pauseReason ? "Choose a reason first" : s.call || s.awaiting_outcome ? "The call you are on finishes as normal; no new customer will be rung" : "Stop Smartflo ringing new customers until you resume"}
                           onClick={pause}>{busy ? "Pausing…" : "Pause campaign"}</button>
                 </>
               )}
