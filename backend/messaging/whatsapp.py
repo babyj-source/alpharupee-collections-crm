@@ -37,9 +37,15 @@ def _prepare(loan, template_key, link, now, again=False):
         if template is None:
             raise SendRefused("That WhatsApp template is not available.")
     else:
-        template = WhatsappTemplate.objects.filter(kind="overdue", active=True).first() if (loan.dpd or 0) >= 1 else None
+        dpd = loan.dpd or 0
+        if dpd >= 1:
+            template = WhatsappTemplate.objects.filter(kind="overdue", active=True).first()
+        elif dpd == 0 and (loan.demand_due or 0) > 0:      # due today: the LMS shows an amount due but the account is not late yet
+            template = WhatsappTemplate.objects.filter(kind="dpd0", active=True).first()
+        else:
+            template = None
         if template is None:
-            raise SendRefused("No WhatsApp template fits this loan yet. The due-date reminders need the next EMI date, which the CRM does not hold.")
+            raise SendRefused("No WhatsApp template fits this loan. The DPD 0 message needs an amount due today; the due-date reminders need the next EMI date, which the CRM does not hold.")
     if not in_window(now):
         raise SendRefused(f"Messages go out between {CALL_START_HOUR:02d}:00 and {CALL_END_HOUR:02d}:00 only.")
     if loan.crm_status in ("paid", "dispute"):
