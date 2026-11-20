@@ -76,9 +76,9 @@ class TemplateApiTests(Base):
 
 
 class WhatsappTests(Base):
-    def test_four_templates_are_seeded_with_msg91_ids(self):
+    def test_five_templates_are_seeded_with_msg91_ids(self):
         got = dict(WhatsappTemplate.objects.values_list("key", "msg91_template_id"))
-        self.assertEqual(got, {"wa_due2": "556471", "wa_due1": "556469", "wa_due0": "556481", "wa_overdue": "556730"})
+        self.assertEqual(got, {"wa_due2": "556471", "wa_due1": "556469", "wa_due0": "556481", "wa_overdue": "556730", "wa_dpd0": "620159"})
         self.assertEqual(set(WhatsappTemplate.objects.values_list("namespace", flat=True)), {"544dead2_efd4_43d5_a69a_1ec9b1dbeafc"})
         self.assertEqual(sorted(WhatsappTemplate.objects.filter(has_image_header=True).values_list("key", flat=True)), ["wa_due0", "wa_overdue"])
 
@@ -123,7 +123,7 @@ class WhatsappTests(Base):
 
     def test_api_head_lists_admin_sets_image_url(self):
         self.assertEqual(self.api(self.a1).get("/api/messaging/whatsapp").status_code, 403)
-        self.assertEqual(len(self.api(self.head).get("/api/messaging/whatsapp").json()), 4)
+        self.assertEqual(len(self.api(self.head).get("/api/messaging/whatsapp").json()), 5)
         admin = type(self.head).objects.create_user("ad@x.com", "pw", name="Ad", mobile="919000000009", role="admin")
         c = self.api(admin)
         self.assertEqual(c.put("/api/messaging/whatsapp/wa_due0", {"header_image_url": "http://insecure/x.jpg"}, format="json").status_code, 400)

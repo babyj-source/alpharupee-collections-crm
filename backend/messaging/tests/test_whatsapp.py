@@ -63,13 +63,39 @@ class TemplateSendTests(Wa):
         self.assertEqual(post.call_args.kwargs["headers"]["authkey"], "k")
         self.assertTrue(Activity.objects.filter(loan=self.l2, kind="message", detail="WhatsApp sent to the borrower: repay_overdue_missed").exists())
 
+    def _dpd0_loan(self, demand_due="2500.00"):
+        type(self.l1).objects.filter(pk=self.l1.pk).update(dpd=0, demand_due=Decimal(demand_due), installment_amount=Decimal("2500.00"),
+                                                          borrower_name="NEHA SINGH", borrower_mobile="919111111111")
+        self.l1.refresh_from_db()
+        return self.l1
+
+    def test_a_dpd0_account_with_an_amount_due_gets_the_dpd0_template_without_an_image(self):
+        loan = self._dpd0_loan()
+        with mock.patch("messaging.msg91.requests.post", return_value=Resp()) as post:
+            m = send_whatsapp_for_loan(loan, self.a1)
+        self.assertEqual((m.state, m.template_key), ("sent", "wa_dpd0"))
+        t = post.call_args.kwargs["json"]["payload"]["template"]
+        self.assertEqual((t["name"], t["namespace"], t["language"]["code"]), ("dpd0", "544dead2_efd4_43d5_a69a_1ec9b1dbeafc", "en"))
+        comp = t["to_and_components"][0]["components"]
+        self.assertEqual(comp, {"body_1": {"type": "text", "value": "2500"}, "body_2": {"type": "text", "value": LINK}})   # no header_1
+        self.assertEqual(m.text, f"Your loan payment of \u20b92500 is overdue as of today. Please pay using the link {LINK} . "
+                                 "If already paid, please ignore this message or Call +918065075438 - AlphaRupee")
+
+    def test_a_dpd0_account_with_nothing_due_gets_no_message(self):
+        loan = self._dpd0_loan(demand_due="0")
+        p = preview_whatsapp(loan)
+        self.assertIn("No WhatsApp template fits", p["problem"])
+
+    def test_an_overdue_account_still_gets_the_missed_payment_template(self):
+        self.assertEqual(preview_whatsapp(self.l2)["template"], "wa_overdue")
+
     def test_image_template_needs_a_header_image(self):
         WhatsappTemplate.objects.filter(key="wa_overdue").update(header_image_url="")
         with self.assertRaisesMessage(SendRefused, "header image"):
             send_whatsapp_for_loan(self.l2, self.a2)
 
-    def test_due_date_reminders_cannot_be_picked_for_an_account_not_yet_overdue(self):
-        type(self.l2).objects.filter(pk=self.l2.pk).update(dpd=0)
+    def test_due_date_reminders_cannot_be_picked_for_an_account_not_yet_overdue_with_nothing_due(self):
+        type(self.l2).objects.filter(pk=self.l2.pk).update(dpd=0, demand_due=0)
         self.l2.refresh_from_db()
         with self.assertRaisesMessage(SendRefused, "No WhatsApp template fits"):
             send_whatsapp_for_loan(self.l2, self.a2)

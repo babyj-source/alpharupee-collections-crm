@@ -32,7 +32,7 @@ class WhatsappTemplate(models.Model):
     """One approved MSG91 WhatsApp template. `variables` maps each positional placeholder ({{1}}, {{2}} ...) to a loan field
     (see templates.SOURCES). Templates with an image header need `header_image_url`; until it is set the CRM will not build the message."""
 
-    KIND = [("due2", "Due in 2 days"), ("due1", "Due tomorrow"), ("due0", "Due today"), ("overdue", "Missed payment")]
+    KIND = [("due2", "Due in 2 days"), ("due1", "Due tomorrow"), ("due0", "Due today"), ("dpd0", "DPD 0 (amount due today)"), ("overdue", "Missed payment")]
 
     key = models.CharField(max_length=40, unique=True)
     name = models.CharField(max_length=60, help_text="template name in MSG91 / WhatsApp")
