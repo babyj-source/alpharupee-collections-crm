@@ -57,9 +57,37 @@ class DialerSession(models.Model):
     released = models.BooleanField(default=True, help_text="Smartflo has been told the outcome of the last call")
     last_seen_at = models.DateTimeField(null=True, blank=True, help_text="last time the agent's Dialer screen checked in")
     on_call = models.BooleanField(default=False, help_text="as of last_seen_at")
+    paused_at = models.DateTimeField(null=True, blank=True, help_text="the agent paused the campaign (no new customers are dialled) and has not resumed")
+    pause_reason = models.CharField(max_length=20, blank=True, help_text="key of the reason chosen (see PAUSE_REASONS)")
 
     class Meta:
         indexes = [models.Index(fields=["user", "ended_at"])]
+
+
+# Why an agent may pause the campaign. The key is stored; the label is what people read.
+PAUSE_REASONS = [
+    ("lunch", "Lunch break"),
+    ("tea", "Tea or short break"),
+    ("meeting", "Team meeting or training"),
+    ("tech", "Technical problem (phone, headset, internet)"),
+    ("paperwork", "Customer follow-up or paperwork"),
+    ("personal", "Personal or health"),
+    ("other", "Other"),
+]
+PAUSE_LABELS = dict(PAUSE_REASONS)
+
+
+class DialerPause(models.Model):
+    """Each pause of a campaign by an agent, with the reason, so a head can see where the time went."""
+
+    session = models.ForeignKey(DialerSession, on_delete=models.CASCADE, related_name="pauses")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    reason = models.CharField(max_length=20)
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "started_at"])]
 
 
 class CampaignPush(models.Model):

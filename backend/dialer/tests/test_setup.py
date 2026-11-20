@@ -323,6 +323,46 @@ class ClientSetupTests(Base):
             SmartfloClient(self.Http(status=422, body={"message": "Campaign is not active."})).session_create("T", "5", "C")
 
     @ON
+    def test_being_signed_in_to_another_campaign_is_closed_and_the_start_retried(self):
+        """Production, 20 Nov 2026: Smartflo said "only be logged in to one campaign at a time" and named the agent's other campaign."""
+        said = {"ok": False, "error": "You can only be logged in to one campaign at a time. Please logout from the following campaign(s) before logging in again.",
+                "data": [{"id": 577161, "name": "Collection Campaign"}]}
+        sent = []
+
+        class Http:
+            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+                sent.append((url.rsplit("/v1/", 1)[1], dict(json or {})))
+                first_create = sum(1 for u, _ in sent if u == "dialer/session/create") == 1
+
+                class R:
+                    status_code = 422 if (url.endswith("session/create") and first_create) else 200
+
+                    def json(self_inner):
+                        return said if self_inner.status_code == 422 else {"success": True}
+                return R()
+        r = SmartfloClient(Http()).session_create("T", "605933", "1-7 DPD")
+        self.assertEqual(r["left"], ["Collection Campaign"])
+        self.assertEqual([u for u, _ in sent], ["dialer/session/create", "dialer/logout", "dialer/session/create"])
+        self.assertEqual(sent[1][1], {"campaign_id": "577161"})
+
+    @ON
+    def test_if_the_other_campaign_cannot_be_closed_the_agent_is_told_which_one(self):
+        said = {"ok": False, "error": "You can only be logged in to one campaign at a time.", "data": [{"id": 577161, "name": "Collection Campaign"}]}
+
+        class Http:
+            def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+                class R:
+                    status_code = 422 if url.endswith("session/create") else 500
+
+                    def json(self_inner):
+                        return said if self_inner.status_code == 422 else {"message": "boom"}
+                return R()
+        with self.assertRaises(SmartfloError) as cm:
+            SmartfloClient(Http()).session_create("T", "605933", "1-7 DPD")
+        self.assertIn("Collection Campaign", str(cm.exception))
+        self.assertIn("Sign out of it in Smartflo", str(cm.exception))
+
+    @ON
     def test_campaign_refusal_in_a_200_is_an_error(self):
         with self.assertRaisesMessage(SmartfloError, "Invalid caller"):
             SmartfloClient(self.Http(body={"success": False, "message": "Invalid caller"})).create_campaign({"name": "C"})

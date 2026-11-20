@@ -22,6 +22,8 @@ urlpatterns = [
     path("session/start", views.SessionStartView.as_view()),
     path("session/push", views.SessionPushView.as_view()),
     path("session/stop", views.SessionStopView.as_view()),
+    path("session/pause", views.SessionPauseView.as_view()),
+    path("session/resume", views.SessionResumeView.as_view()),
     path("session/dismiss", views.SessionDismissView.as_view()),
     path("session/release", views.SessionReleaseView.as_view()),
     path("session/leads", views.SessionLeadsView.as_view()),

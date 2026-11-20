@@ -21,7 +21,7 @@ export default function Campaigns({ user }) {
   );
 }
 
-const STATE = { on_call: ["On a call", "ok"], waiting: ["Waiting for a call", ""], idle: ["Screen idle", "today"] };
+const STATE = { on_call: ["On a call", "ok"], waiting: ["Waiting for a call", ""], idle: ["Screen idle", "today"], paused: ["Paused", "today"] };
 
 function Live() {
   const [d, setD] = useState(null);
@@ -66,7 +66,7 @@ function Live() {
             {d.agents.map((a, i) => (
               <tr key={i}>
                 <td>{a.name}</td><td>{a.campaign}</td>
-                <td><span className={`chip ${STATE[a.state][1]}`}>{STATE[a.state][0]}</span></td>
+                <td><span className={`chip ${STATE[a.state][1]}`}>{STATE[a.state][0]}</span>{a.state === "paused" && <span className="muted small"> {a.pause_reason} · since {hm(a.paused_since)}</span>}</td>
                 <td>{a.account_id ? `${a.account_id} · ${a.borrower_name}` : "—"}</td>
                 <td>{hm(a.started_at)}</td><td className="r">{num(a.outcomes_today)}</td>
               </tr>

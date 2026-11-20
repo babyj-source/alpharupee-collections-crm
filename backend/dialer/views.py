@@ -24,7 +24,7 @@ from loans.serializers import LoanSerializer
 from loans.views import DispositionView, scoped
 from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITION_LABELS, DISPOSITIONS
 
-from .models import Campaign, CampaignPush, DialAttempt, DialerProfile, DialerSession, DispositionMap, PushedLead
+from .models import PAUSE_LABELS, PAUSE_REASONS, Campaign, CampaignPush, DialAttempt, DialerPause, DialerProfile, DialerSession, DispositionMap, PushedLead
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
 from . import setup as smartflo_setup
 from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls, walk_dicts
@@ -395,7 +395,8 @@ class StatusView(APIView):
     def get(self, request):
         p = _profile(request.user)
         return Response({"enabled": enabled(), "in_window": in_window(), "window": f"{CALL_START_HOUR:02d}:00-{CALL_END_HOUR:02d}:00",
-                         "agent_ready": bool(p and p.smartflo_email), "can_click_to_call": bool(p and p.agent_number)})
+                         "agent_ready": bool(p and p.smartflo_email), "can_click_to_call": bool(p and p.agent_number),
+                         "pause_reasons": [{"key": k, "label": v} for k, v in PAUSE_REASONS]})
 
 
 class StartSerializer(serializers.Serializer):
@@ -441,8 +442,10 @@ class SessionStartView(APIView):
             if exc.status in (400, 401, 403, 422):
                 return bad("Smartflo did not accept that login id and password. " + str(exc).split(". ", 1)[-1][:120], 400)
             return bad(str(exc), 502)
+        left = []
         try:
-            client.session_create(token, camp.smartflo_campaign_id, camp.label)
+            made = client.session_create(token, camp.smartflo_campaign_id, camp.label)
+            left = (made.get("left") or []) if isinstance(made, dict) else []
             try:
                 client.session_call(token, camp.smartflo_campaign_id, start=True)
             except SmartfloError as exc:
@@ -457,12 +460,13 @@ class SessionStartView(APIView):
             return bad(f"Signed in, but Smartflo would not start the session. {exc}", 502)
         s = DialerSession.objects.create(user=request.user, campaign=camp, token_enc=seal(token),
                                          token_expires_at=timezone.now() + timedelta(minutes=TOKEN_MINUTES))
-        audit(request, "dialer_started", user=request.user, object_type="campaign", object_id=camp.pk, detail=camp.key)
+        audit(request, "dialer_started", user=request.user, object_type="campaign", object_id=camp.pk,
+              detail=camp.key + (f" (signed out of Smartflo campaign: {', '.join(left)[:120]})" if left else ""))
         sent, total, error = push_for_agent(camp, request.user, client)
         if sent or error:
             audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
                   detail=f"{camp.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
-        return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at,
+        return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at, "left": left,
                          "push": {"sent": sent, "total": total, "error": error}})
 
 
@@ -621,10 +625,75 @@ class SessionStopView(APIView):
                 get_client().logout(unseal(s.token_enc), s.campaign.smartflo_campaign_id)
             except SmartfloError:
                 pass  # we still close our side; Smartflo logs the agent out when the token lapses
-            s.ended_at = timezone.now()
-            s.save(update_fields=["ended_at"])
+            now = timezone.now()
+            DialerPause.objects.filter(session=s, ended_at__isnull=True).update(ended_at=now)
+            s.ended_at, s.paused_at, s.pause_reason = now, None, ""
+            s.save(update_fields=["ended_at", "paused_at", "pause_reason"])
             audit(request, "dialer_stopped", user=request.user, object_type="campaign", object_id=s.campaign_id)
         return Response({"active": False})
+
+
+class PauseSerializer(serializers.Serializer):
+    reason = serializers.ChoiceField(choices=[k for k, _ in PAUSE_REASONS])
+
+
+class SessionPauseView(APIView):
+    """The agent pauses the campaign (a break, a meeting, a fault): Smartflo stops ringing new customers, the agent stays signed in.
+    Not while a call is on or its outcome is still owed: finish that first. The reason is kept so a head can see where the time went."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        ser = PauseSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        reason = ser.validated_data["reason"]
+        s, _ = current_session(request.user)
+        if not s:
+            return bad("Start the campaign first.")
+        if s.paused_at:
+            return bad("The campaign is already paused. Press Resume to carry on.")
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        if s.on_call or (s.last_unique_id and not s.released):
+            return bad("Finish the call and log its outcome first, then pause.")
+        try:
+            get_client().session_call(unseal(s.token_enc), s.campaign.smartflo_campaign_id, start=False)
+        except SmartfloError as exc:
+            return bad(f"Smartflo would not pause the campaign. {exc}", 502)
+        s.paused_at, s.pause_reason = timezone.now(), reason
+        s.save(update_fields=["paused_at", "pause_reason"])
+        DialerPause.objects.create(session=s, user=request.user, reason=reason)
+        audit(request, "dialer_paused", user=request.user, object_type="campaign", object_id=s.campaign_id, detail=PAUSE_LABELS[reason])
+        return Response({"paused": {"since": s.paused_at, "reason": reason, "label": PAUSE_LABELS[reason]}})
+
+
+class SessionResumeView(APIView):
+    """Carry on after a pause: Smartflo starts ringing the agent's customers again."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        s, expired = current_session(request.user)
+        if not s:
+            return bad("Your Smartflo session ran out while you were paused. Start the campaign again with your password." if expired else "Start the campaign first.")
+        if not s.paused_at:
+            return Response({"paused": None})
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        try:
+            get_client().session_call(unseal(s.token_enc), s.campaign.smartflo_campaign_id, start=True)
+        except SmartfloError as exc:
+            if "on a call" not in str(exc).lower():       # "Agent is on a call." = the session call is already running: nothing to restart
+                return bad(f"Smartflo would not resume the campaign. {exc}", 502)
+        now = timezone.now()
+        DialerPause.objects.filter(session=s, ended_at__isnull=True).update(ended_at=now)
+        reason = s.pause_reason
+        s.paused_at, s.pause_reason = None, ""
+        s.save(update_fields=["paused_at", "pause_reason"])
+        audit(request, "dialer_resumed", user=request.user, object_type="campaign", object_id=s.campaign_id, detail=PAUSE_LABELS.get(reason, reason))
+        return Response({"paused": None})
 
 
 def _grant(user, loans):
@@ -804,6 +873,7 @@ class SessionView(APIView):
         if enabled():
             keep_fresh(s, get_client())
         out = {"active": True, "campaign": {"key": s.campaign.key, "label": s.campaign.label}, "expires_at": s.token_expires_at,
+               "paused": ({"since": s.paused_at, "reason": s.pause_reason, "label": PAUSE_LABELS.get(s.pause_reason, "")} if s.paused_at else None),
                "call": None, "candidates": [], "current": None, "awaiting_outcome": False, "warning": "", "unparsed_fields": [],
                "queue": [], "stats": {}, "log": [], "live": {"seen": 0, "via": "none"}}
         now = timezone.now()
@@ -1002,8 +1072,9 @@ class LiveView(APIView):
                        .values_list("user_id").annotate(n=Count("id"))}
         for s in sessions.order_by("started_at"):
             seen = s.last_seen_at and (now - s.last_seen_at).total_seconds() <= IDLE_SECONDS
-            state = "on_call" if (seen and s.on_call) else "waiting" if seen else "idle"
+            state = "paused" if s.paused_at else "on_call" if (seen and s.on_call) else "waiting" if seen else "idle"
             agents.append({"name": s.user.name, "campaign": s.campaign.label, "started_at": s.started_at, "state": state,
+                           "paused_since": s.paused_at, "pause_reason": PAUSE_LABELS.get(s.pause_reason, "") if s.paused_at else "",
                            "account_id": s.last_loan.account_id if (state == "on_call" and s.last_loan) else "",
                            "borrower_name": s.last_loan.borrower_name if (state == "on_call" and s.last_loan) else "",
                            "outcomes_today": calls_today.get(s.user_id, 0)})
