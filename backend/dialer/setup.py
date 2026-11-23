@@ -47,14 +47,14 @@ def smartflo_outcome(code):
 
 # Settings the CRM chooses for a new campaign. They follow the example Smartflo's dialler team tested ("calls are connecting"):
 # ratio dialling 1:1, Dial Out (Session) so each agent has one session call for the shift, agent extension (softphone), callbacks only
-# to the same agent. The business rules are ours: up to 3 attempts, 2 hours apart, a 60-second wrap-up after each call, and the
+# to the same agent. The business rules are ours: up to 3 attempts, 30 minutes apart, a 60-second wrap-up after each call, and the
 # not-reached and busy customers are dialled again. Review them in Smartflo after the first campaign is made.
 CAMPAIGN_DEFAULTS = {
     "dial_method": "2", "dial_ratio": "1",
     "dial_in_type": "3",
     "connect_agent_through": "2",
     "list_traversal_order": "1",                        # oldest lead first; the CRM pushes the highest days-past-due first
-    "number_of_retry": "3", "retry_after_minutes": "120",
+    "number_of_retry": "3", "retry_after_minutes": "30",
     "auto_disposition_cancel_duration": "60", "ring_timeout": "30", "queue_timeout": "10", "ring_strategy": "1",
     "dial_status": ["0", "-1", "-5", "-8", "-9"],       # Smartflo's codes: new, undisposed (dialled, no outcome), call drop, missed by agent, queue missed
     "hide_lead_details": True, "update_lead_details": True, "agent_only_callback": True, "enable_web_form": 0,

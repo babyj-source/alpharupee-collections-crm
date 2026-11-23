@@ -116,6 +116,37 @@ def push_for_agent(camp, user, client):
     return sent, len(pairs), error
 
 
+# Outcomes after which a customer must NOT be rung again today: spoken to, a wrong number, or asked to be called back later.
+LEAVE_ALONE = set(CONNECTED) | {"wrong_number", "call_back_later"}
+
+
+def unreached_today(camp, user):
+    """The sent-today rows (PushedLead) of this agent's customers in this campaign who have not been reached: Smartflo never connected a call
+    to them today and no outcome that closes them (spoken to, wrong number, call back later) is logged. 'No answer' and 'not reachable' count
+    as not reached, so they are the ones rung again."""
+    today = timezone.localdate()
+    start = timezone.make_aware(datetime.combine(today, time.min))
+    mine = PushedLead.objects.filter(campaign=camp, pushed_on=today, user=user)
+    loans = mine.values("loan_id")
+    talked = DialAttempt.objects.filter(loan_id__in=loans, connected_at__gte=start).values("loan_id")
+    closed = Activity.objects.filter(kind=Activity.Kind.DISPOSITION, loan_id__in=loans, created_at__gte=start,
+                                     disposition__in=LEAVE_ALONE).values("loan_id")
+    return mine.exclude(loan_id__in=talked).exclude(loan_id__in=closed)
+
+
+def redial_unreached(camp, user, client):
+    """Clear this agent's not-yet-reached customers from the Smartflo list and send them as new, so Smartflo rings them again now instead of
+    waiting out its retry time. Customers already spoken to are left alone. Returns (resent, sent, total, error, warning): `resent` is how many
+    earlier customers were put back, `sent`/`total` count everything pushed in this go (new customers too)."""
+    rows_qs = unreached_today(camp, user)
+    ids = list(rows_qs.values_list("loan_id", flat=True))
+    rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=ids))] if ids else []
+    warning = _clear_leads(client, camp.smartflo_list_id, rows) if rows else ""
+    rows_qs.delete()
+    sent, total, error = push_for_agent(camp, user, client)
+    return len(ids), sent, total, error, warning
+
+
 class CampaignWriteSerializer(serializers.Serializer):
     label = serializers.CharField(max_length=60, required=False)
     rules = serializers.DictField(required=False)
@@ -462,12 +493,21 @@ class SessionStartView(APIView):
                                          token_expires_at=timezone.now() + timedelta(minutes=TOKEN_MINUTES))
         audit(request, "dialer_started", user=request.user, object_type="campaign", object_id=camp.pk,
               detail=camp.key + (f" (signed out of Smartflo campaign: {', '.join(left)[:120]})" if left else ""))
-        sent, total, error = push_for_agent(camp, request.user, client)
+        # Rejoining the same day: only the customers not reached yet are cleared and sent again; the ones already spoken to stay as they are.
+        rejoined = PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), user=request.user).exists()
+        resent, warning = 0, ""
+        if rejoined:
+            try:
+                resent, sent, total, error, warning = redial_unreached(camp, request.user, client)
+            except SmartfloError as exc:
+                sent, total, error = 0, 0, str(exc)[:200]
+        else:
+            sent, total, error = push_for_agent(camp, request.user, client)
         if sent or error:
             audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
-                  detail=f"{camp.key}: {sent} of {total}" + (" (stopped on an error)" if error else ""))
+                  detail=f"{camp.key}: {sent} of {total}" + (f" (including {resent} not reached earlier)" if resent else "") + (" (stopped on an error)" if error else ""))
         return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at, "left": left,
-                         "push": {"sent": sent, "total": total, "error": error}})
+                         "push": {"sent": sent, "total": total, "error": error, "resent": resent, "warning": warning}})
 
 
 class SessionPushView(APIView):
@@ -540,6 +580,25 @@ def _clear_leads(client, list_id, rows):
         if attempt(f"delete by {field}", lambda f=field, v=values: client.delete_leads(list_id, f, v)):
             return ""
     return "Smartflo would not clear the old entries. They were sent again anyway. Smartflo said: " + "; ".join(errors)
+
+
+class SessionRedialView(APIView):
+    """Ring the customers not reached yet again now: clear just them from the Smartflo list and send them as new. Those already spoken to
+    (or marked wrong number / call back later) are left alone, unlike 'from scratch' which resends everyone sent today."""
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "dial"
+
+    def post(self, request):
+        s, _ = current_session(request.user)
+        if not s:
+            return bad("Start the campaign first.")
+        if not enabled():
+            return bad("The dialler is switched off on this server.")
+        resent, sent, total, error, warning = redial_unreached(s.campaign, request.user, get_client())
+        audit(request, "campaign_redialled", user=request.user, object_type="campaign", object_id=s.campaign_id,
+              detail=f"{s.campaign.key}: {resent} not reached put back, {sent} sent" + (" (stopped on an error)" if error else ""))
+        return Response({"resent": resent, "sent": sent, "total": total, "error": error, "warning": warning})
 
 
 class SessionResendView(APIView):

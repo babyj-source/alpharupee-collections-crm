@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from loans.models import Activity
-from dialer.models import DialAttempt, DispositionMap, PushedLead
+from dialer.models import Campaign, DialAttempt, DialerSession, DispositionMap, PushedLead
 from dialer.smartflo import SmartfloError
 from dialer.tests.test_dialer import DialerBase
 
@@ -387,3 +387,72 @@ class QueueTests(DialerBase):
         self.assertEqual((len(calls), res["mapped"], len(res["missing"])), (11, 0, 11))
         self.assertTrue(any("NUMBER" in x for x in res["steps"]))
         self.assertEqual(DispositionMap.objects.get(crm_code="no_answer").smartflo_code, "noans")
+
+
+class RedialUnreachedTests(DialerBase):
+    """Rejoining or pressing 'ring the ones not reached' puts back only the customers nobody has spoken to today."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()
+        self.start()
+        self.fake.calls.clear()
+
+    def sent(self):
+        return [c for c in self.fake.calls if c[0] == "bulk_add_leads"]
+
+    def cleared(self):
+        return [c for c in self.fake.calls if c[0] == "delete_leads"]
+
+    def test_unreached_customers_are_cleared_and_sent_again_but_reached_ones_are_left_alone(self):
+        d = self.post(self.a1, "session/redial").json()
+        self.assertEqual((d["resent"], d["sent"], d["error"]), (1, 1, ""))
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual([c for c in self.cleared()][0][2:], ("Account ID", ["L1"]))
+        # now the customer was spoken to: leave them alone
+        now = timezone.now()
+        DialAttempt.objects.create(session=DialerSession.objects.get(), loan=self.l1, call_id="c9", state="ended", started_at=now, connected_at=now)
+        self.fake.calls.clear()
+        d = self.post(self.a1, "session/redial").json()
+        self.assertEqual((d["resent"], d["sent"]), (0, 0))
+        self.assertEqual((self.sent(), self.cleared()), ([], []))
+        self.assertEqual(PushedLead.objects.count(), 1)
+
+    def test_an_outcome_that_closes_the_customer_keeps_them_out_and_no_answer_does_not(self):
+        for code, expect in (("no_answer", 1), ("not_reachable", 1), ("ptp_given", 0), ("wrong_number", 0), ("call_back_later", 0)):
+            Activity.objects.filter(loan=self.l1).delete()
+            Activity.objects.create(loan=self.l1, user=self.a1, kind="disposition", disposition=code)
+            PushedLead.objects.get_or_create(campaign=Campaign.objects.get(key="dpd1_7"), loan=self.l1, pushed_on=timezone.localdate(), user=self.a1)
+            d = self.post(self.a1, "session/redial").json()
+            self.assertEqual(d["resent"], expect, code)
+
+    def test_yesterdays_outcome_does_not_count(self):
+        a = Activity.objects.create(loan=self.l1, user=self.a1, kind="disposition", disposition="ptp_given")
+        Activity.objects.filter(pk=a.pk).update(created_at=timezone.now() - timedelta(days=1))
+        self.assertEqual(self.post(self.a1, "session/redial").json()["resent"], 1)
+
+    def test_rejoining_the_same_day_redials_only_the_unreached(self):
+        self.post(self.a1, "session/stop")
+        self.fake.calls.clear()
+        r = self.start()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["push"]["resent"], 1)
+        self.assertEqual(len(self.cleared()), 1)
+        # spoken to meanwhile -> a second rejoin leaves them alone
+        Activity.objects.create(loan=self.l1, user=self.a1, kind="disposition", disposition="refuses")
+        self.post(self.a1, "session/stop")
+        self.fake.calls.clear()
+        r = self.start()
+        self.assertEqual((r.json()["push"]["resent"], self.cleared(), self.sent()), (0, [], []))
+
+    def test_the_first_start_of_the_day_just_sends_everyone(self):
+        PushedLead.objects.all().delete()
+        self.post(self.a1, "session/stop")
+        self.fake.calls.clear()
+        r = self.start()
+        self.assertEqual((r.json()["push"]["sent"], r.json()["push"]["resent"], self.cleared()), (1, 0, []))
+
+    def test_redial_needs_a_running_campaign_and_only_touches_this_agents_customers(self):
+        self.post(self.a1, "session/stop")
+        self.assertEqual(self.post(self.a1, "session/redial").status_code, 400)
