@@ -50,7 +50,7 @@ export default function Dialer() {
       setPush(r.push);
       shown.current = null;
       await refresh();
-      const again = r.push?.resent ? `${num(r.push.resent)} customers not reached earlier were sent to Smartflo again.` : "";
+      const again = r.push?.resent ? `${num(r.push.resent)} customers not reached earlier were sent to Smartflo again.${r.push.left ? ` ${num(r.push.left)} more are waiting: press "Ring the customers not reached yet".` : ""}` : "";
       if (r.left?.length) setNotice(`You were signed out of the Smartflo campaign \u201c${r.left.join("\u201d, \u201c")}\u201d so this one could start. ${again}`);
       else if (again) setNotice(again);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
@@ -63,9 +63,17 @@ export default function Dialer() {
   async function redial() {
     setError(""); setNotice(""); setBusy(true);
     try {
-      const r = await api("/dialer/session/redial", { method: "POST" });
-      setPush(r);
-      setNotice(r.error ? "" : r.resent ? `${num(r.resent)} customers not reached yet were sent to Smartflo again.${r.warning ? " " + r.warning : ""}` : "Everyone sent today has already been reached or closed. Nothing to ring again.");
+      let total = 0, r = null;
+      for (let go = 0; go < 8; go++) {                       // Smartflo limits how fast leads can be changed, so a long list goes in batches
+        r = await api("/dialer/session/redial", { method: "POST" });
+        setPush(r);
+        total += r.resent || 0;
+        if (r.error) { setError(r.error); break; }
+        if (!r.left) break;
+        setNotice(`${num(total)} customers sent again, ${num(r.left)} to go…`);
+        await new Promise((ok) => setTimeout(ok, 3000));
+      }
+      if (!r.error) setNotice(total ? `${num(total)} customers not reached yet were sent to Smartflo again.${r.left ? ` ${num(r.left)} more are still waiting: press the button again in a minute.` : ""}${r.warning ? " " + r.warning : ""}` : "Everyone sent today has already been reached or closed. Nothing to ring again.");
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function resend() {

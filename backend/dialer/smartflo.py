@@ -68,7 +68,18 @@ class SmartfloClient:
 
     _prefer = {}  # remembered header form per endpoint, so a fallback is only needed once
 
-    def _send(self, method, path, token, bearer, json, params, base=None):
+    def _send(self, method, path, token, bearer, json, params, base=None, patient=0):
+        """`patient` = how many times to wait and try again when Smartflo answers 429 (too many requests, a limit shared by every agent on the
+        account). Only the list-clearing calls use it; live-call polling never waits."""
+        for attempt in range(patient + 1):
+            try:
+                return self._send_once(method, path, token, bearer, json, params, base)
+            except SmartfloError as exc:
+                if exc.status != 429 or attempt >= patient:
+                    raise
+                time.sleep(min(1.5 * (attempt + 1), 4))
+
+    def _send_once(self, method, path, token, bearer, json, params, base=None):
         headers = {"accept": "application/json", "content-type": "application/json",
                    "Authorization": f"Bearer {token}" if bearer else token}
         started = time.monotonic()
@@ -88,7 +99,7 @@ class SmartfloClient:
             raise SmartfloError(f"Smartflo refused the request ({r.status_code}). {_msg(r)}".strip(), status=r.status_code, body=body)
         return body if body is not None else {}
 
-    def _call(self, method, path, token, *, bearer=False, json=None, params=None, base=None):
+    def _call(self, method, path, token, *, bearer=False, json=None, params=None, base=None, patient=0):
         """The vendor's examples send the token plain on some endpoints and as 'Bearer <token>' on others, and the document
         does not cover every endpoint. If Smartflo rejects the TOKEN (not a wrong password), try the other form once and
         remember which one worked."""
@@ -99,7 +110,7 @@ class SmartfloClient:
         key = (base or "", method, re.sub(r"\d+", "#", path))
         first = self._prefer.get(key, bearer)
         try:
-            data = self._send(method, path, token, first, json, params, base)
+            data = self._send(method, path, token, first, json, params, base, patient)
         except SmartfloError as exc:
             msg = str(exc).lower()
             # "Unauthenticated user" is the same kind of refusal as a bad token (wrong header form). Never for sign-in: a wrong
@@ -107,7 +118,7 @@ class SmartfloClient:
             if exc.status != 401 or path == "/v1/auth/login" or not ("token" in msg or "unauthenticated" in msg):
                 raise
             try:
-                data = self._send(method, path, token, not first, json, params, base)
+                data = self._send(method, path, token, not first, json, params, base, patient)
             except SmartfloError:
                 raise SmartfloError(str(exc) + " Tried the token with and without “Bearer”; check it is the right token and still valid.",
                                     status=401)
@@ -127,7 +138,7 @@ class SmartfloClient:
 
     def bulk_add_leads(self, list_id, rows):
         return self._call("POST", f"/v1/broadcast/lead/{list_id}", settings.SMARTFLO_API_TOKEN,
-                          json={"data": rows, "duplicate_option": "overwrite"})
+                          json={"data": rows, "duplicate_option": "overwrite"}, patient=2)
 
     # ---- set-up calls (account token), from Smartflo's public API reference (docs.smartflo.tatatelebusiness.com)
     def _all_pages(self, path, limit=100):
@@ -206,7 +217,7 @@ class SmartfloClient:
         """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked).
         `number` asks for one phone number only: the list is shared by every agent and comes back a page at a time."""
         return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
-                          params={"number": str(number)} if number else None)
+                          params={"number": str(number)} if number else None, patient=2)
 
     def update_campaign(self, campaign_id, body):
         """Change settings of a dialler campaign (every field optional; only the ones sent change)."""
@@ -214,12 +225,12 @@ class SmartfloClient:
 
     def delete_lead(self, lead_id):
         """Remove one lead by its own id (the lead_id Smartflo shows when the list is read)."""
-        return self._call("DELETE", f"/v1/broadcast/lead/{lead_id}", settings.SMARTFLO_API_TOKEN, bearer=True)
+        return self._call("DELETE", f"/v1/broadcast/lead/{lead_id}", settings.SMARTFLO_API_TOKEN, bearer=True, patient=2)
 
     def delete_leads(self, list_id, field, values):
         """Remove leads from a lead list by the value of one column (for example field_0 = mobile)."""
         return self._call("DELETE", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
-                          json={"field": field, "data": [str(v) for v in values]})
+                          json={"field": field, "data": [str(v) for v in values]}, patient=2)
 
     def probe(self):
         return self._call("GET", "/v1/users", settings.SMARTFLO_API_TOKEN, bearer=True, params={"limit": 1})  # the vendor's example uses Bearer here

@@ -4,8 +4,9 @@ from django.utils import timezone
 
 from loans.models import Activity
 from dialer.models import Campaign, DialAttempt, DialerSession, DispositionMap, PushedLead
-from dialer.smartflo import SmartfloError
+from dialer.smartflo import SmartfloClient, SmartfloError
 from dialer.tests.test_dialer import DialerBase
+from loans.tests.test_workflow import Base
 
 
 class QueueTests(DialerBase):
@@ -456,3 +457,80 @@ class RedialUnreachedTests(DialerBase):
     def test_redial_needs_a_running_campaign_and_only_touches_this_agents_customers(self):
         self.post(self.a1, "session/stop")
         self.assertEqual(self.post(self.a1, "session/redial").status_code, 400)
+
+
+class RedialBusySmartfloTests(DialerBase):
+    """Smartflo's request limit (429) is shared by every agent: the CRM waits and retries, works a batch at a time, and never sends on top of
+    entries it could not clear."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()
+        self.start()
+        self.fake.calls.clear()
+
+    def test_if_smartflo_will_not_clear_nothing_is_sent_and_the_customer_stays_queued(self):
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (429). Too Many Requests", status=429)}
+        d = self.post(self.a1, "session/redial").json()
+        self.assertEqual((d["resent"], d["sent"]), (0, 0))
+        self.assertIn("nothing was changed", d["error"])
+        self.assertNotIn("bulk_add_leads", self.fake.names())
+        self.assertEqual(PushedLead.objects.count(), 1)          # still counted as sent, so no duplicate is made
+
+    def test_a_long_list_is_put_back_a_batch_at_a_time(self):
+        from unittest import mock
+        from dialer import views
+        l2 = type(self.l1).objects.get(pk=self.l2.pk)
+        type(self.l1).objects.filter(pk=l2.pk).update(dpd=3, assigned_agent=self.a1)
+        self.post(self.a1, "session/push")
+        self.assertEqual(PushedLead.objects.count(), 2)
+        with mock.patch.object(views, "REDIAL_BATCH", 1):
+            d1 = self.post(self.a1, "session/redial").json()
+            self.assertEqual((d1["resent"], d1["left"]), (1, 1))
+            d2 = self.post(self.a1, "session/redial").json()
+            self.assertEqual(d2["resent"], 1)
+        self.assertEqual(PushedLead.objects.count(), 2)
+
+    def test_start_reports_how_many_are_left(self):
+        from unittest import mock
+        from dialer import views
+        type(self.l1).objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)
+        self.post(self.a1, "session/push")
+        self.post(self.a1, "session/stop")
+        with mock.patch.object(views, "REDIAL_BATCH", 1):
+            r = self.start().json()
+        self.assertEqual((r["push"]["resent"], r["push"]["left"]), (1, 1))
+
+
+class ClientBusyTests(Base):
+    Http = __import__("dialer.tests.test_dialer", fromlist=["ClientTests"]).ClientTests.Http
+
+    class Busy429Then200:
+        def __init__(self):
+            self.n = 0
+
+        def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+            self.n += 1
+            n = self.n
+
+            class R:
+                status_code = 429 if n < 3 else 200
+                text = ""
+
+                def json(self):
+                    return {"message": "Too Many Requests"} if n < 3 else []
+            return R()
+
+    def test_lead_calls_wait_and_try_again_on_429_but_live_polling_does_not(self):
+        from unittest import mock
+        h = self.Busy429Then200()
+        with mock.patch("dialer.smartflo.time.sleep") as sleep:
+            with self.settings(SMARTFLO_ENABLED=True, SMARTFLO_API_TOKEN="t"):
+                self.assertEqual(SmartfloClient(h).list_leads("1", number="9"), [])
+        self.assertEqual((h.n, sleep.call_count), (3, 2))
+        h2 = self.Busy429Then200()
+        with mock.patch("dialer.smartflo.time.sleep") as sleep, self.settings(SMARTFLO_ENABLED=True, SMARTFLO_API_TOKEN="t"):
+            with self.assertRaises(SmartfloError) as ctx:
+                SmartfloClient(h2).live_calls("agent-token")
+        self.assertEqual((h2.n, sleep.call_count, ctx.exception.status), (1, 0, 429))
