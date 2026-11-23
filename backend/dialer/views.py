@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 
@@ -134,17 +135,29 @@ def unreached_today(camp, user):
     return mine.exclude(loan_id__in=talked).exclude(loan_id__in=closed)
 
 
+REDIAL_BATCH = 30   # customers put back per go: Smartflo's request limit is shared by every agent, so a big list is done a batch at a time
+
+
+class ClearWarning(str):
+    """The warning from _clear_leads; `partial` is True when some leads were already deleted one by one before Smartflo stopped."""
+    partial = False
+
+
 def redial_unreached(camp, user, client):
-    """Clear this agent's not-yet-reached customers from the Smartflo list and send them as new, so Smartflo rings them again now instead of
-    waiting out its retry time. Customers already spoken to are left alone. Returns (resent, sent, total, error, warning): `resent` is how many
-    earlier customers were put back, `sent`/`total` count everything pushed in this go (new customers too)."""
-    rows_qs = unreached_today(camp, user)
-    ids = list(rows_qs.values_list("loan_id", flat=True))
+    """Clear a batch of this agent's not-yet-reached customers from the Smartflo list and send them as new, so Smartflo rings them again now
+    instead of waiting out its retry time. Customers already spoken to are left alone. If Smartflo will not clear them, nothing is sent (sending
+    on top would only duplicate them) and the agent is asked to try again. Returns (resent, sent, total, error, warning, left): `resent` is how
+    many earlier customers were put back, `left` how many still wait for another go."""
+    unreached = list(unreached_today(camp, user).values_list("pk", "loan_id"))
+    batch, left = unreached[:REDIAL_BATCH], max(len(unreached) - REDIAL_BATCH, 0)
+    ids = [loan_id for _pk, loan_id in batch]
     rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=ids))] if ids else []
     warning = _clear_leads(client, camp.smartflo_list_id, rows) if rows else ""
-    rows_qs.delete()
+    if warning and not getattr(warning, "partial", False):
+        return 0, 0, len(ids), "Smartflo is busy or would not clear the old entries, so nothing was changed. Wait a minute and try again.", str(warning), len(unreached)
+    PushedLead.objects.filter(pk__in=[pk for pk, _l in batch]).delete()
     sent, total, error = push_for_agent(camp, user, client)
-    return len(ids), sent, total, error, warning
+    return len(ids), sent, total, error, str(warning), left
 
 
 class CampaignWriteSerializer(serializers.Serializer):
@@ -495,10 +508,10 @@ class SessionStartView(APIView):
               detail=camp.key + (f" (signed out of Smartflo campaign: {', '.join(left)[:120]})" if left else ""))
         # Rejoining the same day: only the customers not reached yet are cleared and sent again; the ones already spoken to stay as they are.
         rejoined = PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), user=request.user).exists()
-        resent, warning = 0, ""
+        resent, warning, rest = 0, "", 0
         if rejoined:
             try:
-                resent, sent, total, error, warning = redial_unreached(camp, request.user, client)
+                resent, sent, total, error, warning, rest = redial_unreached(camp, request.user, client)
             except SmartfloError as exc:
                 sent, total, error = 0, 0, str(exc)[:200]
         else:
@@ -507,7 +520,7 @@ class SessionStartView(APIView):
             audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
                   detail=f"{camp.key}: {sent} of {total}" + (f" (including {resent} not reached earlier)" if resent else "") + (" (stopped on an error)" if error else ""))
         return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at, "left": left,
-                         "push": {"sent": sent, "total": total, "error": error, "resent": resent, "warning": warning}})
+                         "push": {"sent": sent, "total": total, "error": error, "resent": resent, "warning": warning, "left": rest}})
 
 
 class SessionPushView(APIView):
@@ -537,7 +550,9 @@ def _lead_ids(client, list_id, rows):
     accts = {r["field_2"] for r in rows}
     nums = {last10(r["field_0"]) for r in rows}
     ids = []
-    for r in rows[:LEAD_LOOKUPS]:
+    for n, r in enumerate(rows[:LEAD_LOOKUPS]):
+        if n:
+            time.sleep(0.2)             # Smartflo's request limit is shared by every agent on the account; do not burst
         for d in walk_dicts(client.list_leads(list_id, number=r["field_0"])):
             if str(d.get("field_2", "")).strip() in accts or last10(str(d.get("field_0", ""))) in nums:
                 lid = d.get("lead_id") or d.get("id")
@@ -576,6 +591,10 @@ def _clear_leads(client, list_id, rows):
             done += 1
         if done == len(ids):
             return ""
+        if done:
+            partial = ClearWarning("Smartflo cleared only some of the old entries. " + "; ".join(errors))
+            partial.partial = True       # some leads are already gone, so the send must go ahead or they would be lost
+            return partial
     for field, values in (("Account ID", [r["field_2"] for r in rows]), ("Phone Number", [r["field_0"] for r in rows])):
         if attempt(f"delete by {field}", lambda f=field, v=values: client.delete_leads(list_id, f, v)):
             return ""
@@ -595,10 +614,10 @@ class SessionRedialView(APIView):
             return bad("Start the campaign first.")
         if not enabled():
             return bad("The dialler is switched off on this server.")
-        resent, sent, total, error, warning = redial_unreached(s.campaign, request.user, get_client())
+        resent, sent, total, error, warning, left = redial_unreached(s.campaign, request.user, get_client())
         audit(request, "campaign_redialled", user=request.user, object_type="campaign", object_id=s.campaign_id,
-              detail=f"{s.campaign.key}: {resent} not reached put back, {sent} sent" + (" (stopped on an error)" if error else ""))
-        return Response({"resent": resent, "sent": sent, "total": total, "error": error, "warning": warning})
+              detail=f"{s.campaign.key}: {resent} not reached put back, {sent} sent, {left} left" + (" (stopped on an error)" if error else ""))
+        return Response({"resent": resent, "sent": sent, "total": total, "error": error, "warning": warning, "left": left})
 
 
 class SessionResendView(APIView):

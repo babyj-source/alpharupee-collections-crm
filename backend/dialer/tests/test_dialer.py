@@ -154,7 +154,7 @@ class StartPushTests(DialerBase):
         Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a2)   # also in dpd1_7, but Agent Two's
         r = self.start()
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(r.json()["push"], {"sent": 1, "total": 1, "error": "", "resent": 0, "warning": ""})
+        self.assertEqual(r.json()["push"], {"sent": 1, "total": 1, "error": "", "resent": 0, "warning": "", "left": 0})
         push = [c for c in self.fake.calls if c[0] == "bulk_add_leads"]
         self.assertEqual(len(push), 1)
         self.assertEqual(push[0][1:], ("222", [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}]))
@@ -183,7 +183,7 @@ class StartPushTests(DialerBase):
     def test_agent_with_no_customers_still_starts(self):
         r = self.start(self.a2)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["push"], {"sent": 0, "total": 0, "error": "", "resent": 0, "warning": ""})
+        self.assertEqual(r.json()["push"], {"sent": 0, "total": 0, "error": "", "resent": 0, "warning": "", "left": 0})
         self.assertNotIn("bulk_add_leads", self.fake.names())
 
     def test_push_error_keeps_the_session_and_can_be_retried(self):
