@@ -50,13 +50,23 @@ export default function Dialer() {
       setPush(r.push);
       shown.current = null;
       await refresh();
-      if (r.left?.length) setNotice(`You were signed out of the Smartflo campaign \u201c${r.left.join("\u201d, \u201c")}\u201d so this one could start.`);
+      const again = r.push?.resent ? `${num(r.push.resent)} customers not reached earlier were sent to Smartflo again.` : "";
+      if (r.left?.length) setNotice(`You were signed out of the Smartflo campaign \u201c${r.left.join("\u201d, \u201c")}\u201d so this one could start. ${again}`);
+      else if (again) setNotice(again);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function sendAgain() {
     setError(""); setBusy(true);
     try { setPush(await api("/dialer/session/push", { method: "POST" })); }
     catch (err) { setError(err.message); } finally { setBusy(false); }
+  }
+  async function redial() {
+    setError(""); setNotice(""); setBusy(true);
+    try {
+      const r = await api("/dialer/session/redial", { method: "POST" });
+      setPush(r);
+      setNotice(r.error ? "" : r.resent ? `${num(r.resent)} customers not reached yet were sent to Smartflo again.${r.warning ? " " + r.warning : ""}` : "Everyone sent today has already been reached or closed. Nothing to ring again.");
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function resend() {
     if (!window.confirm("Clear your customers in Smartflo and send them again from scratch? Use this when Smartflo is not ringing customers it already tried today.")) return;
@@ -208,6 +218,7 @@ export default function Dialer() {
             )}
             <div className="row">
               <button className="ghost" disabled={busy} onClick={sendAgain}>Send my new customers to Smartflo</button>
+              <button className="ghost" disabled={busy} onClick={redial}>Ring the customers not reached yet</button>
               <button className="ghost" disabled={busy} onClick={resend}>Send my customers again from scratch</button>
               <button className="ghost" disabled={busy} onClick={checkSmartflo}>Check what Smartflo sees</button>
             </div>
@@ -224,7 +235,7 @@ export default function Dialer() {
                 {sf.missing.length > 0 && <p className="error small">Not found in Smartflo's list: {sf.missing.join(", ")}. Use "Send my customers again from scratch".</p>}
               </div>
             )}
-            <p className="muted small">Smartflo does not ring a customer it has already tried today until its retry wait is over. If the agent line rings but no customer is dialled, use "from scratch".</p>
+            <p className="muted small">Smartflo does not ring a customer it has already tried today until its retry wait is over. To ring them now, use "Ring the customers not reached yet": it puts back only customers nobody has spoken to today. "From scratch" resends everyone sent today. Starting the campaign again does the "not reached yet" part by itself.</p>
           </section>
 
           <section className={`card nowcall${s.call ? " live" : ""}`} aria-live="polite">

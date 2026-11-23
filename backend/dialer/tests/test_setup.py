@@ -116,7 +116,7 @@ class SetupFlowTests(DialerBase):
                          ("2", "3", "2", "10", "1"))                                # what Smartflo's team tested
         self.assertEqual((body["hide_lead_details"], body["update_lead_details"], body["agent_only_callback"]), (True, True, True))
         self.assertEqual(body["disposition_list"], str(self.fake.dlists[0]["id"]))
-        self.assertEqual((body["number_of_retry"], body["retry_after_minutes"], body["ring_timeout"]), ("3", "120", "30"))
+        self.assertEqual((body["number_of_retry"], body["retry_after_minutes"], body["ring_timeout"]), ("3", "30", "30"))
         self.assertTrue(r.json()["campaign"]["configured"])
 
     def test_a_refused_campaign_says_which_step_and_keeps_the_list(self):

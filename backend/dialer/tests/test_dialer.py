@@ -154,7 +154,7 @@ class StartPushTests(DialerBase):
         Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a2)   # also in dpd1_7, but Agent Two's
         r = self.start()
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(r.json()["push"], {"sent": 1, "total": 1, "error": ""})
+        self.assertEqual(r.json()["push"], {"sent": 1, "total": 1, "error": "", "resent": 0, "warning": ""})
         push = [c for c in self.fake.calls if c[0] == "bulk_add_leads"]
         self.assertEqual(len(push), 1)
         self.assertEqual(push[0][1:], ("222", [{"field_0": "9111111111", "field_1": "Asha Rao", "field_2": "L1"}]))
@@ -169,7 +169,12 @@ class StartPushTests(DialerBase):
         r = self.post(self.a1, "session/push")
         self.assertEqual((r.status_code, r.json()["sent"], r.json()["total"]), (200, 0, 0))
         self.assertNotIn("bulk_add_leads", self.fake.names())
-        self.start()                                                           # starting again the same day: still not re-sent
+        self.start()                                                           # starting again the same day: nobody reached yet, so they are rung again
+        self.assertEqual(self.fake.names().count("bulk_add_leads"), 1)
+        self.assertEqual(PushedLead.objects.count(), 1)                        # but still one row per customer per day
+        Activity.objects.create(loan=self.l1, user=self.a1, kind="disposition", disposition="ptp_given")
+        self.fake.calls.clear()
+        self.start()                                                           # spoken to: left alone on the next rejoin
         self.assertNotIn("bulk_add_leads", self.fake.names())
         Loan.objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)  # a new customer is allocated to Asha
         self.assertEqual(self.post(self.a1, "session/push").json()["sent"], 1)
@@ -178,7 +183,7 @@ class StartPushTests(DialerBase):
     def test_agent_with_no_customers_still_starts(self):
         r = self.start(self.a2)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["push"], {"sent": 0, "total": 0, "error": ""})
+        self.assertEqual(r.json()["push"], {"sent": 0, "total": 0, "error": "", "resent": 0, "warning": ""})
         self.assertNotIn("bulk_add_leads", self.fake.names())
 
     def test_push_error_keeps_the_session_and_can_be_retried(self):
