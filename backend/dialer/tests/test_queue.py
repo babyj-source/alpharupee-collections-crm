@@ -534,3 +534,36 @@ class ClientBusyTests(Base):
             with self.assertRaises(SmartfloError) as ctx:
                 SmartfloClient(h2).live_calls("agent-token")
         self.assertEqual((h2.n, sleep.call_count, ctx.exception.status), (1, 0, 429))
+
+
+class RedialManyCustomersTests(DialerBase):
+    """Regression: a list of two or more customers pauses between Smartflo lookups (a name clash once broke this with a 500)."""
+
+    def test_two_or_more_unreached_customers_are_put_back_in_one_go(self):
+        from unittest import mock
+        from django.core.cache import cache
+        cache.clear()
+        type(self.l1).objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)
+        self.start()
+        self.fake.calls.clear()
+        with mock.patch("dialer.views.sleep") as pause:
+            r = self.post(self.a1, "session/redial")
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()
+        self.assertEqual((d["resent"], d["left"], d["error"]), (2, 0, ""))
+        self.assertGreaterEqual(pause.call_count, 1)
+        # and rejoining does the same
+        self.post(self.a1, "session/stop")
+        with mock.patch("dialer.views.sleep"):
+            r = self.start()
+        self.assertEqual((r.status_code, r.json()["push"]["resent"]), (200, 2))
+
+    def test_start_from_scratch_with_two_customers_also_works(self):
+        from unittest import mock
+        from django.core.cache import cache
+        cache.clear()
+        type(self.l1).objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a1)
+        self.start()
+        with mock.patch("dialer.views.sleep"):
+            r = self.post(self.a1, "session/resend")
+        self.assertEqual((r.status_code, r.json()["sent"]), (200, 2), r.content)
