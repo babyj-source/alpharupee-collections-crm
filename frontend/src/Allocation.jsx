@@ -23,7 +23,7 @@ export default function Allocation() {
           help={<>
             <p className="small">One row per account. The agent can be an e-mail, a name, or <code>unassigned</code>.</p>
             <pre className="sample">loan_id,agent{"\n"}L-100417,asha@alpharupee.in{"\n"}L-100552,Ravi Kumar{"\n"}L-103867,unassigned</pre>
-            <p className="small"><a href="/api/allocation/template.csv" download>Download a template with today’s allocation</a> (overdue accounts), change the agent column and upload it back. Closed accounts are rejected, and accounts that are not in the CRM yet appear after the next LMS sync.</p>
+            <p className="small"><a href="/api/allocation/template.csv" download>Download a template with today’s allocation</a> (overdue accounts and the cases falling due today), change the agent column and upload it back. Closed accounts are rejected, and accounts that are not in the CRM yet appear after the next LMS sync.</p>
           </>}
           countKeys={[["move", "Will move"], ["same", "No change"], ["errors", "Errors"]]}
           actionKey="move"

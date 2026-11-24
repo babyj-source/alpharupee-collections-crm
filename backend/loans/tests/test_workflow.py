@@ -349,6 +349,16 @@ class AllocationTests(Base):
         self.assertNotIn("L3,", text)  # no dues
         self.assertEqual(self.api(self.a1).get("/api/allocation/template.csv").status_code, 403)
 
+    def test_template_includes_cases_falling_due_today_but_not_accounts_that_owe_nothing(self):
+        Loan.objects.filter(pk=self.l3.pk).update(dpd=0, demand_due=250, fee_due=0, operational_status="0")
+        text = self.api(self.head).get("/api/allocation/template.csv").content.decode("utf-8-sig")
+        self.assertIn("L3,unassigned,", text)
+        self.assertIn(",0,250.00", text)
+        Loan.objects.filter(pk=self.l3.pk).update(demand_due=0, fee_due=0)
+        self.assertNotIn("L3,", self.api(self.head).get("/api/allocation/template.csv").content.decode("utf-8-sig"))
+        Loan.objects.filter(pk=self.l3.pk).update(demand_due=0, fee_due=75)           # a fee due today counts as due too
+        self.assertIn("L3,", self.api(self.head).get("/api/allocation/template.csv").content.decode("utf-8-sig"))
+
 
 class ExportTests(Base):
     def test_head_only_masked_and_logged(self):
