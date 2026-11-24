@@ -708,3 +708,11 @@ class ListAuditTests(DialerBase):
         text = self.run_it("--remove")
         self.assertIn("stopped", text)
         self.assertEqual(len([c for c in self.fake.calls if c[0] == "delete_lead"]), 1)
+
+    def test_it_says_how_many_leads_are_ready_to_ring_and_how_many_wait_out_the_retry_time(self):
+        past, future = "2020-01-01T00:00:00.000000Z", "2999-01-01T00:00:00.000000Z"
+        for d, at in zip(self.fake.leads["data"], (past, future, future, "")):
+            d["available_at"] = at
+        text = self.run_it()
+        self.assertIn("ready for Smartflo to ring right now: 2; waiting out the retry time: 2", text)
+        self.assertIn("becomes ready at 2999-01-01 00:00:00 UTC", text)
