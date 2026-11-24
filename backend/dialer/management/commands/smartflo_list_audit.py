@@ -8,6 +8,7 @@ out of the list the customers that were NOT sent today: nobody loses anything, b
     manage.py smartflo_list_audit dpd0
     manage.py smartflo_list_audit dpd0 --remove
 """
+from datetime import datetime, timezone as timezone_utc
 from time import sleep
 
 from django.core.management.base import BaseCommand, CommandError
@@ -37,7 +38,8 @@ def read_list(client, list_id):
                 continue
             seen.add(str(lid))
             got += 1
-            out.append({"lead_id": str(lid), "account": str(d.get("field_2", "")).strip(), "calls": d.get("call_count"), "dial_status": d.get("dial_status")})
+            out.append({"lead_id": str(lid), "account": str(d.get("field_2", "")).strip(), "calls": d.get("call_count"), "dial_status": d.get("dial_status"),
+                        "available_at": str(d.get("available_at") or "")})
         top = reply if isinstance(reply, dict) else {}
         nxt = top.get("last_seen_id")
         more = top.get("has_more") or top.get("hasMore")
@@ -48,12 +50,28 @@ def read_list(client, list_id):
     return out, pages
 
 
+def available_now(x, now):
+    """Smartflo rings a lead only once its `available_at` (last try + the campaign's retry wait) has passed."""
+    try:
+        at = datetime.fromisoformat(x["available_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return at <= now
+
+
 class Command(BaseCommand):
     help = "Count what is in a campaign's Smartflo lead list against what the CRM sent today; --remove takes out the ones not sent today."
 
     def add_arguments(self, parser):
         parser.add_argument("campaign", help="campaign key, e.g. dpd0, dpd1_7")
         parser.add_argument("--remove", action="store_true", help="delete the leads not sent today from the Smartflo list")
+
+    def report_availability(self, leads):
+        now = datetime.now(timezone_utc.utc)
+        ready = [x for x in leads if available_now(x, now)]
+        waiting = sorted(x["available_at"] for x in leads if not available_now(x, now))
+        self.stdout.write(f"  ready for Smartflo to ring right now: {len(ready)}; waiting out the retry time: {len(waiting)}"
+                          + (f" (the first becomes ready at {waiting[0][:19].replace('T', ' ')} UTC)" if waiting else ""))
 
     def handle(self, *args, campaign, remove, **opts):
         camp = Campaign.objects.filter(key=campaign).first()
@@ -79,6 +97,7 @@ class Command(BaseCommand):
         self.stdout.write(f"{camp.key}: {len(leads)} leads in the Smartflo list (read in {pages} page(s)); CRM sent {len(sent_today)} today")
         for name, items in groups.items():
             self.stdout.write(f"  {name}: {len(items)}")
+        self.report_availability(leads)
         stale = [x for name, items in groups.items() if name != "sent today" for x in items]
         if not remove or not stale:
             if stale:
