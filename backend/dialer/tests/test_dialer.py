@@ -698,7 +698,7 @@ class ClientTests(Base):
         with self.assertRaisesMessage(SmartfloError, "Smartflo did not end the call"):
             SmartfloClient(self.Http(body={"success": False, "message": "no such call"})).hangup("T1", "x")
         calls, unparsed = parse_live_calls([LIVE])
-        self.assertEqual((calls, unparsed), ([{"id": "HYD1-D11-1.522967", "number": "9111111111", "state": "Answered", "seconds": 16}], []))
+        self.assertEqual((calls, unparsed), ([{"id": "HYD1-D11-1.522967", "number": "9111111111", "state": "Answered", "seconds": 16, "source": "0606000001"}], []))
 
     @ON
     def test_session_missing_reply_is_shown_to_the_agent(self):
@@ -795,7 +795,7 @@ class ClientTests(Base):
 
     def test_parse_live_calls(self):
         one = {"call_id": "c1", "customer_number": "+91 98765-43210", "status": "answered"}
-        self.assertEqual(parse_live_calls([one])[0], [{"id": "c1", "number": "9876543210", "state": "answered", "seconds": 0}])
+        self.assertEqual(parse_live_calls([one])[0], [{"id": "c1", "number": "9876543210", "state": "answered", "seconds": 0, "source": ""}])
         self.assertEqual(parse_live_calls({"data": [one]})[0][0]["id"], "c1")
         self.assertEqual(parse_live_calls({"data": {"calls": [one]}})[0][0]["number"], "9876543210")
         self.assertEqual(parse_live_calls({"results": [{"uuid": "u", "destination": "9876543210"}]})[0][0]["id"], "u")
