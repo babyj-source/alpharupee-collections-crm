@@ -3,7 +3,7 @@ import csv
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -86,13 +86,17 @@ def _resolve_agent(text, lookup):
     return None, False, f"Agent “{clean_text(t, 40)}” not found"
 
 
+# Cases to allocate: overdue (DPD above 0) and cases falling due today (DPD 0 with an amount due now). Active accounts that owe nothing are left out.
+CASES_Q = Q(dpd__gt=0) | Q(dpd=0, demand_due__gt=0) | Q(dpd=0, fee_due__gt=0)
+
+
 def _load(agent_ids_names, moves):
     """Active overdue accounts per agent before and after the moves. moves: {loan_pk: (old_agent_id, new_agent_id)}."""
     base = {
         r["assigned_agent"]: r["n"]
-        for r in Loan.objects.filter(ACTIVE_Q, dpd__gt=0).values("assigned_agent").annotate(n=Count("id"))
+        for r in Loan.objects.filter(ACTIVE_Q).filter(CASES_Q).values("assigned_agent").annotate(n=Count("id"))
     }
-    overdue_ids = set(Loan.objects.filter(ACTIVE_Q, dpd__gt=0, pk__in=list(moves)).values_list("pk", flat=True))
+    overdue_ids = set(Loan.objects.filter(ACTIVE_Q, pk__in=list(moves)).filter(CASES_Q).values_list("pk", flat=True))
     after = dict(base)
     for pk, (old, new) in moves.items():
         if pk in overdue_ids and old != new:
@@ -193,14 +197,14 @@ class AllocationHistoryView(APIView):
 
 
 class AllocationTemplateView(APIView):
-    """Current allocation of the overdue accounts, to edit in Excel and upload back."""
+    """Current allocation of the overdue accounts and of today's due cases, to edit in Excel and upload back."""
 
     permission_classes = [IsHead]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "export"
 
     def get(self, request):
-        qs = Loan.objects.filter(ACTIVE_Q, dpd__gt=0).select_related("assigned_agent").order_by("assigned_agent__name", "-dpd", "account_id")
+        qs = Loan.objects.filter(ACTIVE_Q).filter(CASES_Q).select_related("assigned_agent").order_by("assigned_agent__name", "-dpd", "account_id")
         resp = HttpResponse(content_type="text/csv; charset=utf-8")
         resp["Content-Disposition"] = 'attachment; filename="allocation_template.csv"'
         resp["Cache-Control"] = "no-store"
