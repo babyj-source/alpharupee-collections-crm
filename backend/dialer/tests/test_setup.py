@@ -315,6 +315,14 @@ class ClientSetupTests(Base):
         self.assertIn("outbound_caller_id: Already in use.", text)
 
     @ON
+    def test_the_campaign_name_sent_has_no_symbols_smartflo_refuses(self):
+        """Production, 24 Nov 2026: "16+ DPD" answered 422 "The campaign name format is invalid."; "1-7 DPD" was accepted."""
+        for label, sent in (("16+ DPD", "16 DPD"), ("1-7 DPD", "1-7 DPD"), ("0 DPD", "0 DPD"), ("Promise to pay", "Promise to pay"), ("Call-back (today)", "Call-back today")):
+            h = self.Http(body={"ok": True})
+            SmartfloClient(h).session_create("T", "605931", label)
+            self.assertEqual(h.sent["json"]["campaign_name"], sent, label)
+
+    @ON
     def test_a_session_that_already_exists_is_not_an_error(self):
         said = "You are already logged in to this campaign. Initiate session call to start dialing."
         r = SmartfloClient(self.Http(status=422, body={"success": False, "message": said})).session_create("T", "5", "C")

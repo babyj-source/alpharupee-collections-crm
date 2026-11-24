@@ -243,9 +243,12 @@ class SmartfloClient:
         signed in to another one, for example the account's own "Collection Campaign" opened in Smartflo's agent screen. The agent has
         just typed their password to start THIS campaign, so the other sign-in is closed and the start is tried once more. The names of
         the campaigns left come back as `left`."""
+        # Smartflo checks the name's format: "1-7 DPD" is accepted but "16+ DPD" answers 422 "The campaign name format is invalid."
+        plain = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 \-]", " ", str(name or ""))).strip()
+
         def create():
             return self._call("POST", "/v1/dialer/session/create", token, bearer=True,
-                              json={"campaign_id": _id(campaign_id), "campaign_name": name})
+                              json={"campaign_id": _id(campaign_id), "campaign_name": plain})
         try:
             return create()
         except SmartfloError as exc:
