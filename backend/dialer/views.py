@@ -1,9 +1,9 @@
 import base64
 import hashlib
 import re
-import time
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+from time import sleep
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
@@ -552,7 +552,7 @@ def _lead_ids(client, list_id, rows):
     ids = []
     for n, r in enumerate(rows[:LEAD_LOOKUPS]):
         if n:
-            time.sleep(0.2)             # Smartflo's request limit is shared by every agent on the account; do not burst
+            sleep(0.2)                  # Smartflo's request limit is shared by every agent on the account; do not burst
         for d in walk_dicts(client.list_leads(list_id, number=r["field_0"])):
             if str(d.get("field_2", "")).strip() in accts or last10(str(d.get("field_0", ""))) in nums:
                 lid = d.get("lead_id") or d.get("id")
