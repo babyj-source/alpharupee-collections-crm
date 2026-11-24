@@ -109,6 +109,7 @@ class PushedLead(models.Model):
     loan = models.ForeignKey("loans.Loan", on_delete=models.CASCADE, related_name="+")
     pushed_on = models.DateField()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    withdrawn = models.BooleanField(default=False, help_text="taken out of the Smartflo list again (the agent left the campaign) and not yet sent back")
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["campaign", "loan", "pushed_on"], name="uniq_pushed_lead")]

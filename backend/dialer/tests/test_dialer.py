@@ -34,7 +34,7 @@ class FakeSmartflo:
 
     leads = {"data": []}
 
-    def list_leads(self, list_id, number=None):
+    def list_leads(self, list_id, number=None, last_seen_id=None, limit=None):
         self._do("list_leads", list_id)
         return self.leads
 
@@ -503,7 +503,7 @@ class SessionTests(DialerBase):
         self.post(self.a1, "session/dismiss")
         self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["awaiting_outcome"])
         self.assertEqual(self.post(self.a1, "session/stop").json(), {"active": False})
-        self.assertEqual(self.fake.calls[-1][0], "logout")
+        self.assertIn("logout", [c[0] for c in self.fake.calls])
         self.assertFalse(self.api(self.a1).get("/api/dialer/session").json()["active"])
         self.assertTrue(DialerSession.objects.get().ended_at)
 

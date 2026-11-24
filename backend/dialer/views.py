@@ -148,16 +148,57 @@ def redial_unreached(camp, user, client):
     instead of waiting out its retry time. Customers already spoken to are left alone. If Smartflo will not clear them, nothing is sent (sending
     on top would only duplicate them) and the agent is asked to try again. Returns (resent, sent, total, error, warning, left): `resent` is how
     many earlier customers were put back, `left` how many still wait for another go."""
-    unreached = list(unreached_today(camp, user).values_list("pk", "loan_id"))
+    unreached = list(unreached_today(camp, user).values_list("pk", "loan_id", "withdrawn"))
     batch, left = unreached[:REDIAL_BATCH], max(len(unreached) - REDIAL_BATCH, 0)
-    ids = [loan_id for _pk, loan_id in batch]
-    rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=ids))] if ids else []
+    ids = [loan_id for _pk, loan_id, _w in batch]
+    # customers taken out of the list earlier (the agent had left) are not in Smartflo any more: nothing to clear, just send them again
+    in_list = [loan_id for _pk, loan_id, w in batch if not w]
+    rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=in_list))] if in_list else []
     warning = _clear_leads(client, camp.smartflo_list_id, rows) if rows else ""
     if warning and not getattr(warning, "partial", False):
         return 0, 0, len(ids), "Smartflo is busy or would not clear the old entries, so nothing was changed. Wait a minute and try again.", str(warning), len(unreached)
-    PushedLead.objects.filter(pk__in=[pk for pk, _l in batch]).delete()
+    PushedLead.objects.filter(pk__in=[pk for pk, _l, _w in batch]).delete()
     sent, total, error = push_for_agent(camp, user, client)
     return len(ids), sent, total, error, str(warning), left
+
+
+WITHDRAW_BATCH = REDIAL_BATCH
+
+
+def withdraw_leads(camp, user, client):
+    """Take this agent's not-yet-reached customers out of the campaign's shared Smartflo list. All agents of a campaign share one list and
+    Smartflo hands the next customer to whichever agent is free, so customers of an agent who is not signed in to the campaign would
+    be rung by a colleague. The rows stay recorded (withdrawn) so the agent's next start puts them back. Never raises: Smartflo being busy
+    only means they stay in the list until the next try. Returns how many were taken out."""
+    rows_qs = unreached_today(camp, user).filter(withdrawn=False)
+    batch = list(rows_qs.values_list("pk", "loan_id")[:WITHDRAW_BATCH])
+    if not batch:
+        return 0
+    rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=[l for _p, l in batch]))]
+    if not rows:
+        return 0
+    try:
+        warning = _clear_leads(client, camp.smartflo_list_id, rows)
+    except SmartfloError:
+        return 0
+    if warning:                      # busy, refused or only some cleared: leave them as they are and try again at the next start or stop
+        return 0
+    PushedLead.objects.filter(pk__in=[p for p, _l in batch]).update(withdrawn=True)
+    return len(batch)
+
+
+def withdraw_absent_agents(camp, client, keep_user=None):
+    """Before a campaign is rung, take out of its shared list the customers of agents who are not signed in to it any more (they stopped,
+    switched campaign, or their session lapsed), so the agents who are signed in only ring their own customers."""
+    now = timezone.now()
+    active = set(DialerSession.objects.filter(campaign=camp, ended_at__isnull=True, token_expires_at__gt=now).values_list("user_id", flat=True))
+    owners = set(PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), withdrawn=False).values_list("user_id", flat=True))
+    taken = 0
+    for uid in owners - active - {None, getattr(keep_user, "pk", None)}:
+        user = User.objects.filter(pk=uid).first()
+        if user:
+            taken += withdraw_leads(camp, user, client)
+    return taken
 
 
 class CampaignWriteSerializer(serializers.Serializer):
@@ -477,6 +518,8 @@ class SessionStartView(APIView):
                 pass
             old.ended_at = timezone.now()
             old.save(update_fields=["ended_at"])
+            if old.campaign_id != camp.pk:
+                withdraw_leads(old.campaign, request.user, client)   # the agent leaves that campaign: its shared list must not hold their customers
         try:
             token = client.agent_login(p.smartflo_email, d["smartflo_password"])
         except SmartfloError as exc:
@@ -519,6 +562,7 @@ class SessionStartView(APIView):
         if sent or error:
             audit(request, "campaign_pushed", user=request.user, object_type="campaign", object_id=camp.pk,
                   detail=f"{camp.key}: {sent} of {total}" + (f" (including {resent} not reached earlier)" if resent else "") + (" (stopped on an error)" if error else ""))
+        withdraw_absent_agents(camp, client, keep_user=request.user)
         return Response({"active": True, "campaign": {"key": camp.key, "label": camp.label}, "expires_at": s.token_expires_at, "left": left,
                          "push": {"sent": sent, "total": total, "error": error, "resent": resent, "warning": warning, "left": rest}})
 
@@ -708,6 +752,7 @@ class SessionStopView(APIView):
             s.ended_at, s.paused_at, s.pause_reason = now, None, ""
             s.save(update_fields=["ended_at", "paused_at", "pause_reason"])
             audit(request, "dialer_stopped", user=request.user, object_type="campaign", object_id=s.campaign_id)
+            withdraw_leads(s.campaign, request.user, get_client())
         return Response({"active": False})
 
 
