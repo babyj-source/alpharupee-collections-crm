@@ -81,6 +81,21 @@ class QueueTests(DialerBase):
         self.assertEqual(DialAttempt.objects.get().call_id, "c-9")                 # the other agent's call is not ours
         self.fake.live_calls = original
 
+    def test_a_call_from_the_agents_own_extension_shows_even_when_the_customer_is_a_colleagues(self):
+        """Production, 24 Nov 2026: Smartflo's shared list gave Syed a customer allocated to someone else; his screen stayed on Waiting."""
+        original = self.fake.live_calls
+
+        def live_calls(token, agent_number=None):
+            if agent_number:
+                return []
+            return {"data": [{"call_id": "c-7", "customer_number": "9222222222", "status": "Answered", "source": "Extension-0606000001", "call_time": "00:00:12"},
+                             {"call_id": "c-6", "customer_number": "9333333333", "status": "Answered", "source": "Extension-0606000002"}]}   # another agent's own call
+        self.fake.live_calls = live_calls
+        d = self.poll()
+        self.assertEqual((d["live"], d["call"]["phase"]), ({"seen": 1, "via": "account"}, "connected"))
+        self.assertEqual(DialAttempt.objects.get().call_id, "c-7")
+        self.fake.live_calls = original
+
     def test_nothing_live_says_so_in_the_diagnostics(self):
         d = self.poll()
         self.assertEqual(d["live"], {"seen": 0, "via": "none"})

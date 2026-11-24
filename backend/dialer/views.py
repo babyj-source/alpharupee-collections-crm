@@ -808,13 +808,16 @@ def _live_for_agent(s, user, profile, queue):
     except SmartfloError as exc:
         warning, unparsed = str(exc), []
     mine = {last10(x) for loan in queue for x in (loan.borrower_mobile, loan.alt_mobile)} - {""}
-    if not mine:
+    ext = (profile.agent_number if profile and profile.agent_number else "").strip()
+    if not mine and not ext:
         return [], unparsed, "none", warning
     try:
         calls, more = parse_live_calls(client.live_calls(settings.SMARTFLO_API_TOKEN, None))
     except SmartfloError as exc:
         return [], unparsed, "none", warning or str(exc)
-    calls = [c for c in calls if c["number"] in mine]
+    # Smartflo hands the next customer of the campaign's shared list to whichever agent is free, so the call may be to a colleague's customer.
+    # A dialler call carries the agent's own extension as its source ("Extension-<agent number>"): that call is this agent's, whoever the customer is.
+    calls = [c for c in calls if c["number"] in mine or (ext and ext in c.get("source", ""))]
     return calls, unparsed or more, ("account" if calls else "none"), warning if not calls else ""
 
 

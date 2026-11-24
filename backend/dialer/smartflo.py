@@ -410,7 +410,8 @@ def parse_live_calls(payload):
         if cid is None or not num:
             unparsed = sorted(str(k) for k in it.keys())[:30]
             continue
-        calls.append({"id": str(cid), "number": num, "state": str(_first(it, _STATE_KEYS) or ""), "seconds": _seconds(it.get("call_time"))})
+        calls.append({"id": str(cid), "number": num, "state": str(_first(it, _STATE_KEYS) or ""), "seconds": _seconds(it.get("call_time")),
+                      "source": str(it.get("source") or "")})       # dialler calls carry "Extension-<agent number>" here
     return calls, unparsed
 
 
