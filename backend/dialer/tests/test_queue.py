@@ -454,7 +454,8 @@ class RedialUnreachedTests(DialerBase):
         r = self.start()
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual(r.json()["push"]["resent"], 1)
-        self.assertEqual(len(self.cleared()), 1)
+        self.assertEqual(self.cleared(), [])         # stopping already took the customer out of Smartflo's list; nothing left to clear
+        self.assertEqual(len(self.sent()), 1)
         # spoken to meanwhile -> a second rejoin leaves them alone
         Activity.objects.create(loan=self.l1, user=self.a1, kind="disposition", disposition="refuses")
         self.post(self.a1, "session/stop")
@@ -582,3 +583,128 @@ class RedialManyCustomersTests(DialerBase):
         with mock.patch("dialer.views.sleep"):
             r = self.post(self.a1, "session/resend")
         self.assertEqual((r.status_code, r.json()["sent"]), (200, 2), r.content)
+
+
+class SharedListOnlyHoldsSignedInAgentsTests(DialerBase):
+    """All agents of a campaign share one Smartflo list, and Smartflo gives the next customer to whichever agent is free, so a colleague's
+    customers must not stay in the list when that colleague has left the campaign."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()
+        type(self.l1).objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a2)
+        from unittest import mock
+        p = mock.patch("dialer.views.sleep")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def cleared(self):
+        return [c for c in self.fake.calls if c[0] == "delete_leads"]
+
+    def sent(self):
+        return [c for c in self.fake.calls if c[0] == "bulk_add_leads"]
+
+    def test_stopping_takes_the_agents_unreached_customers_out_of_the_shared_list(self):
+        self.start(self.a2)
+        self.fake.calls.clear()
+        self.post(self.a2, "session/stop")
+        self.assertEqual([c[2:] for c in self.cleared()], [("Account ID", ["L2"])])
+        self.assertTrue(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+    def test_customers_already_spoken_to_are_left_in_place(self):
+        self.start(self.a2)
+        now = timezone.now()
+        DialAttempt.objects.create(session=DialerSession.objects.get(), loan=self.l2, call_id="c9", state="ended", started_at=now, connected_at=now)
+        self.fake.calls.clear()
+        self.post(self.a2, "session/stop")
+        self.assertEqual(self.cleared(), [])
+        self.assertFalse(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+    def test_switching_campaign_takes_the_customers_out_of_the_old_list_only(self):
+        Campaign.objects.filter(key="dpd8_15").update(smartflo_campaign_id="333", smartflo_list_id="444", active=True)
+        self.start(self.a2)
+        self.fake.calls.clear()
+        self.start(self.a2, campaign="dpd8_15")
+        self.assertEqual([c[1] for c in self.cleared()], ["222"])
+        self.assertTrue(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+    def test_restarting_the_same_campaign_does_not_take_them_out_first(self):
+        self.start(self.a2)
+        self.fake.calls.clear()
+        self.start(self.a2)
+        self.assertEqual(len(self.cleared()), 1)         # the normal put-back of unreached customers, nothing more
+        self.assertFalse(PushedLead.objects.filter(withdrawn=True).exists())
+
+    def test_starting_clears_customers_of_an_agent_whose_session_lapsed(self):
+        self.start(self.a2)
+        DialerSession.objects.filter(user=self.a2).update(token_expires_at=timezone.now() - timedelta(minutes=1))   # never pressed Stop
+        self.fake.calls.clear()
+        self.start(self.a1)
+        self.assertEqual([c[2:] for c in self.cleared()], [("Account ID", ["L2"])])
+        self.assertTrue(PushedLead.objects.get(loan=self.l2).withdrawn)
+        self.assertFalse(PushedLead.objects.get(loan=self.l1).withdrawn)
+
+    def test_an_agent_who_is_signed_in_keeps_their_customers(self):
+        self.start(self.a2)
+        self.fake.calls.clear()
+        self.start(self.a1)
+        self.assertEqual(self.cleared(), [])
+        self.assertFalse(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+    def test_coming_back_puts_the_withdrawn_customers_into_the_list_again_without_clearing_them(self):
+        self.start(self.a2)
+        self.post(self.a2, "session/stop")
+        self.fake.calls.clear()
+        r = self.start(self.a2)
+        self.assertEqual((r.status_code, r.json()["push"]["resent"], r.json()["push"]["error"]), (200, 1, ""), r.content)
+        self.assertEqual(self.cleared(), [])
+        self.assertEqual(len(self.sent()), 1)
+        self.assertFalse(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+    def test_when_smartflo_will_not_clear_them_stop_still_works_and_they_stay_marked_as_in_the_list(self):
+        self.start(self.a2)
+        self.fake.fail = {"delete_leads": SmartfloError("busy", 429), "delete_lead": SmartfloError("busy", 429)}
+        r = self.post(self.a2, "session/stop")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(PushedLead.objects.get(loan=self.l2).withdrawn)
+
+
+class ListAuditTests(DialerBase):
+    """manage.py smartflo_list_audit: what sits in a campaign's shared Smartflo list that the CRM did not send today."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.management import call_command
+        from io import StringIO
+        self.call_command, self.out = call_command, StringIO()
+        self.start()
+        type(self.l1).objects.filter(pk=self.l3.pk).update(assigned_agent=None)
+        self.fake.leads = {"data": [
+            {"lead_id": 11, "field_0": "9111111111", "field_2": "L1"},        # sent today
+            {"lead_id": 12, "field_0": "9333333333", "field_2": "L3"},        # in the CRM, allocated to nobody, never sent
+            {"lead_id": 13, "field_0": "9444444444", "field_2": "L2"},        # belongs to an agent who has not started today
+            {"lead_id": 14, "field_0": "9000000000", "field_2": "ZZ9"},       # not in the CRM at all
+        ]}
+        self.fake.calls.clear()
+
+    def run_it(self, *extra):
+        self.call_command("smartflo_list_audit", "dpd1_7", *extra, stdout=self.out)
+        return self.out.getvalue()
+
+    def test_it_counts_and_changes_nothing_by_default(self):
+        text = self.run_it()
+        self.assertIn("4 leads in the Smartflo list", text)
+        for line in ("sent today: 1", "belongs to an agent: 1", "not allocated to anyone: 1", "not in the CRM: 1"):
+            self.assertIn(line, text)
+        self.assertEqual([c for c in self.fake.calls if c[0].startswith("delete")], [])
+
+    def test_remove_takes_out_only_what_was_not_sent_today(self):
+        self.run_it("--remove")
+        self.assertEqual(sorted(c[1] for c in self.fake.calls if c[0] == "delete_lead"), ["12", "13", "14"])
+
+    def test_remove_stops_when_smartflo_is_busy(self):
+        self.fake.fail = {"delete_lead": SmartfloError("busy", 429)}
+        text = self.run_it("--remove")
+        self.assertIn("stopped", text)
+        self.assertEqual(len([c for c in self.fake.calls if c[0] == "delete_lead"]), 1)

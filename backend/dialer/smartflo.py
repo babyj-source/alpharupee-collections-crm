@@ -213,11 +213,12 @@ class SmartfloClient:
                 params[k] = v
         return self._call("GET", "/v1/call/records", settings.SMARTFLO_API_TOKEN, bearer=True, params=params)
 
-    def list_leads(self, list_id, number=None):
+    def list_leads(self, list_id, number=None, last_seen_id=None, limit=None):
         """The leads in a list with Smartflo's own status for each (dial_status, dialer_dial_status, call_count, retry_count, lead_picked).
-        `number` asks for one phone number only: the list is shared by every agent and comes back a page at a time."""
-        return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True,
-                          params={"number": str(number)} if number else None, patient=2)
+        `number` asks for one phone number only: the list is shared by every agent and comes back a page at a time
+        (`last_seen_id` / `limit` ask for the next page, as the other Smartflo lists do)."""
+        params = {k: str(v) for k, v in (("number", number), ("last_seen_id", last_seen_id), ("limit", limit)) if v}
+        return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True, params=params or None, patient=2)
 
     def update_campaign(self, campaign_id, body):
         """Change settings of a dialler campaign (every field optional; only the ones sent change)."""
