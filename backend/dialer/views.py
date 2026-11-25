@@ -99,7 +99,10 @@ def route_ids(camp, user):
     start); any other campaign has one shared by everybody."""
     if camp.per_agent:
         r = AgentRoute.objects.filter(campaign=camp, user=user).first()
-        return (r.smartflo_campaign_id, r.smartflo_list_id) if r else ("", "")
+        if r:
+            return r.smartflo_campaign_id, r.smartflo_list_id
+        # No campaign of their own yet: a session opened before the switch was ticked is still in the shared one, so stop, pause and the rest
+        # must keep addressing that one.
     return camp.smartflo_campaign_id, camp.smartflo_list_id
 
 
