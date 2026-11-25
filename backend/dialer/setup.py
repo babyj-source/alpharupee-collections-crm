@@ -70,6 +70,20 @@ def clean_name(text, prefix="", limit=60):
 RULE_KEYS = ("number_of_retry", "retry_after_minutes", "dial_status")
 
 
+def apply_dial_rules_everywhere(camp, client):
+    """apply_dial_rules for a campaign's own Smartflo campaign and for every agent's campaign made for it. Returns how many were updated."""
+    done = 0
+    if camp.smartflo_campaign_id:
+        apply_dial_rules(camp, client)
+        done += 1
+    for route in camp.routes.all():
+        client.update_campaign(route.smartflo_campaign_id, {k: CAMPAIGN_DEFAULTS[k] for k in RULE_KEYS})
+        done += 1
+    if not done:
+        raise SetupError("This campaign is not connected to Smartflo yet.")
+    return done
+
+
 def apply_dial_rules(camp, client):
     """Push the CRM's retry rules (how many times, how long between, which lead statuses are dialled) to a campaign already made in
     Smartflo. Campaigns made before the dial_status codes were corrected only dialled brand-new leads, so a customer Smartflo had
@@ -200,10 +214,10 @@ def caller_did_id(client):
                      "If one of these is the right one, ask IT to run set-smartflo.sh did <id>.")
 
 
-def campaign_body(camp, list_id, disposition_list_id, agent_ids, did_id):
+def campaign_body(camp, list_id, disposition_list_id, agent_ids, did_id, name=None):
     body = dict(CAMPAIGN_DEFAULTS)
     body.update({
-        "name": clean_name(camp.label, "CRM"), "description": clean_name(camp.label, "Collections CRM campaign", 200),
+        "name": name or clean_name(camp.label, "CRM"), "description": clean_name(name or camp.label, "Collections CRM campaign", 200),
         "outbound_caller_id": [str(did_id)],
         "lead_list_map": [{"list_id": str(list_id), "list_status": "1"}],
         "disposition_list": str(disposition_list_id),
@@ -265,3 +279,48 @@ def provision_campaign(camp, client):
     camp.smartflo_campaign_id = cid
     camp.save(update_fields=["smartflo_campaign_id"])
     return {"campaign_id": cid, "list_id": list_id, "agents": len(agent_ids), "steps": steps}
+
+
+def agent_route_name(camp, user):
+    """The name of an agent's campaign and list in Smartflo: letters, digits and spaces only, and unique per agent (the CRM user id ends it)."""
+    return clean_name(f"{camp.label} {user.name or user.email.split('@')[0]}", "CRM", 50).rstrip() + f" {user.pk}"
+
+
+def provision_agent_route(camp, user, client):
+    """Make (or adopt) the lead list and the dialler campaign for one agent in one campaign, with only that agent attached, and remember
+    their ids. Safe to run again: whatever already exists in Smartflo under the agent's name is used, not made twice."""
+    from .models import AgentRoute
+
+    route = AgentRoute.objects.filter(campaign=camp, user=user).first()
+    if route:
+        return route
+    profile = DialerProfile.objects.filter(user=user).first()
+    if not (profile and profile.smartflo_email.strip()):
+        raise SetupError("Your Smartflo login id is not set up yet. Ask the Admin to add it under Campaigns, Setup.")
+    want = profile.smartflo_email.strip().lower()
+    agent = next((d for d in _smartflo_users(client) if str(d.get("login_id", "")).strip().lower() == want and str(d.get("id", "")).isdigit()), None)
+    if agent is None:
+        raise SetupError("Smartflo has no user with your login id. Ask the Admin to check it under Campaigns, Setup.")
+    dlist = outcome_list_id()
+    if not dlist:
+        dlist = provision_outcomes(client)["list_id"]
+    name = agent_route_name(camp, user)
+    list_id = find_id(client.list_lead_lists(), name=name)
+    if not list_id:
+        try:
+            client.create_lead_list(name, clean_name(f"{camp.label} customers of {user.name}", "", 200), LEAD_FIELDS)
+        except SmartfloError as exc:
+            raise SetupError(f"Smartflo would not create your lead list. {exc}") from exc
+        list_id = find_id(client.list_lead_lists(), name=name)
+        if not list_id:
+            raise SetupError("Smartflo made your lead list but did not say which id it has. Ask the Admin to look in Smartflo.")
+    cid = find_id(client.list_campaigns(), name=name)
+    if not cid:
+        try:
+            client.create_campaign(campaign_body(camp, list_id, dlist, [int(agent["id"])], caller_did_id(client), name=name))
+        except SmartfloError as exc:
+            raise SetupError(f"Smartflo would not create your campaign. {exc}") from exc
+        cid = find_id(client.list_campaigns(), name=name)
+        if not cid:
+            raise SetupError("Smartflo made your campaign but did not say which id it has. Ask the Admin to look in Smartflo.")
+    return AgentRoute.objects.create(campaign=camp, user=user, smartflo_campaign_id=str(cid), smartflo_list_id=str(list_id), smartflo_name=name)
