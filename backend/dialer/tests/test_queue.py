@@ -716,3 +716,18 @@ class ListAuditTests(DialerBase):
         text = self.run_it()
         self.assertIn("ready for Smartflo to ring right now: 2; waiting out the retry time: 2", text)
         self.assertIn("becomes ready at 2999-01-01 00:00:00 UTC", text)
+
+
+class CampaignShowTests(DialerBase):
+    def test_it_prints_only_list_and_agent_settings(self):
+        from io import StringIO
+        from django.core.management import call_command
+        self.fake.campaign = {"success": True, "data": {"name": "CRM 1 7", "agent_wise_lead_list": 1, "map_agent_lead_list": "[{\"agent\":1,\"list\":2}]",
+                                                        "agent": [817211], "lead_list_map": [{"list_id": 222, "list_status": 1}], "secret_token": "x", "ring_timeout": 30}}
+        out = StringIO()
+        call_command("smartflo_campaign_show", "dpd1_7", stdout=out)
+        text = out.getvalue()
+        for want in ("agent_wise_lead_list: 1", "map_agent_lead_list", "data.agent: [817211]", "lead_list_map"):
+            self.assertIn(want, text)
+        self.assertNotIn("secret_token", text)
+        self.assertNotIn("ring_timeout", text)

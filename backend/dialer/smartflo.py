@@ -220,6 +220,10 @@ class SmartfloClient:
         params = {k: str(v) for k, v in (("number", number), ("last_seen_id", last_seen_id), ("limit", limit)) if v}
         return self._call("GET", f"/v1/broadcast/leads/{list_id}", settings.SMARTFLO_API_TOKEN, bearer=True, params=params or None, patient=2)
 
+    def get_campaign(self, campaign_id):
+        """One dialler campaign as Smartflo stores it (its lead lists, agents and agent-wise list settings)."""
+        return self._call("GET", f"/v1/dialer/campaign/{campaign_id}", settings.SMARTFLO_API_TOKEN, bearer=True, patient=2)
+
     def update_campaign(self, campaign_id, body):
         """Change settings of a dialler campaign (every field optional; only the ones sent change)."""
         return self._call("PUT", f"/v1/dialer/campaign/{campaign_id}", settings.SMARTFLO_API_TOKEN, bearer=True, json=body)
