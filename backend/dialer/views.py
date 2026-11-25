@@ -653,10 +653,11 @@ def _clear_leads(client, list_id, rows):
             errors.append(f"{label}: {str(exc)[:90]}")
             return False
 
+    read_ok = True
     try:
         ids = _lead_ids(client, list_id, rows)
     except SmartfloError as exc:
-        ids = []
+        ids, read_ok = [], False
         errors.append(f"read list: {str(exc)[:90]}")
     if ids:
         for field in ("lead_id", "id"):
@@ -676,6 +677,8 @@ def _clear_leads(client, list_id, rows):
     for field, values in (("Account ID", [r["field_2"] for r in rows]), ("Phone Number", [r["field_0"] for r in rows])):
         if attempt(f"delete by {field}", lambda f=field, v=values: client.delete_leads(list_id, f, v)):
             return ""
+    if read_ok and not ids:
+        return ""          # Smartflo answered and none of these customers is in the list (a list just made for the agent, or already cleared): nothing to clear
     return "Smartflo would not clear the old entries. They were sent again anyway. Smartflo said: " + "; ".join(errors)
 
 
