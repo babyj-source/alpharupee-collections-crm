@@ -38,6 +38,12 @@ class FakeSmartflo:
         self._do("list_leads", list_id)
         return self.leads
 
+    campaign = {"data": {}}
+
+    def get_campaign(self, campaign_id):
+        self._do("get_campaign", campaign_id)
+        return self.campaign
+
     def update_campaign(self, campaign_id, body):
         return self._do("update_campaign", campaign_id, body)
 
