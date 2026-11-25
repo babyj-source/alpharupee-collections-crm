@@ -546,3 +546,13 @@ class PerAgentCampaignTests(DialerBase):
         self.start(self.a1)
         self.assertEqual(self.calls("session_create")[0][2], "111")
         self.assertEqual(self.calls("create_campaign"), [])
+
+    def test_a_session_opened_before_the_switch_was_ticked_still_stops_and_pauses_in_the_shared_campaign(self):
+        Campaign.objects.filter(key="dpd1_7").update(per_agent=False, smartflo_campaign_id="111", smartflo_list_id="222")
+        self.start(self.a1)
+        Campaign.objects.filter(key="dpd1_7").update(per_agent=True)          # the head ticks the box while the agent is signed in
+        self.fake.calls.clear()
+        self.assertEqual(self.post(self.a1, "session/pause", {"reason": "lunch"}).status_code, 200)
+        self.post(self.a1, "session/stop")
+        self.assertEqual([c[2] for c in self.calls("session_call")], ["111"])
+        self.assertEqual([c[2] for c in self.calls("logout")], ["111"])
