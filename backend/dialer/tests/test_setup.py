@@ -423,3 +423,126 @@ class ClientSetupTests(Base):
         self.assertEqual(find_id({"data": {"items": [{"id": 5, "name": "Alpha"}, {"id": 6, "name": "beta"}]}}, name="BETA"), "6")
         self.assertEqual(find_id([{"id": 1, "code": "x_y"}], code="X_Y"), "1")
         self.assertIsNone(find_id({"data": []}, name="none"))
+
+
+@ON
+@override_settings(SMARTFLO_CALLER_ID="1600322818")
+class PerAgentCampaignTests(DialerBase):
+    """Campaign.per_agent: every agent gets a Smartflo campaign and lead list of their own, made at their first start, so agents never ring
+    each other's customers."""
+
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()
+        self.fake = Account()
+        p = mock.patch.object(views, "get_client", return_value=self.fake)
+        p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch("dialer.views.sleep")
+        q.start()
+        self.addCleanup(q.stop)
+        Campaign.objects.filter(key="dpd1_7").update(per_agent=True, smartflo_campaign_id="", smartflo_list_id="")
+        type(self.l1).objects.filter(pk=self.l2.pk).update(dpd=3, assigned_agent=self.a2)
+
+    def calls(self, name):
+        return [c for c in self.fake.calls if c[0] == name]
+
+    def test_the_first_start_makes_the_agents_own_list_and_campaign_with_only_that_agent(self):
+        r = self.start(self.a1)
+        self.assertEqual(r.status_code, 200, r.content)
+        from dialer.models import AgentRoute
+        route = AgentRoute.objects.get(user=self.a1)
+        body = self.calls("create_campaign")[0][1]
+        self.assertEqual(body["agent"], [501])                                   # Asha only, not Ravi
+        self.assertEqual(body["lead_list_map"], [{"list_id": route.smartflo_list_id, "list_status": "1"}])
+        self.assertRegex(body["name"], r"^[A-Za-z0-9 ]+$")
+        self.assertEqual(body["name"], route.smartflo_name)
+        self.assertEqual(self.calls("session_create")[0][2], route.smartflo_campaign_id)
+        self.assertEqual(self.calls("session_call")[0][2], route.smartflo_campaign_id)
+        self.assertEqual(self.calls("bulk_add_leads")[0][1], route.smartflo_list_id)    # her customers go to her list
+
+    def test_each_agent_gets_a_different_campaign_and_list(self):
+        self.start(self.a1)
+        self.start(self.a2)
+        from dialer.models import AgentRoute
+        a, b = AgentRoute.objects.get(user=self.a1), AgentRoute.objects.get(user=self.a2)
+        self.assertNotEqual((a.smartflo_campaign_id, a.smartflo_list_id), (b.smartflo_campaign_id, b.smartflo_list_id))
+        self.assertNotEqual(a.smartflo_name, b.smartflo_name)
+        self.assertEqual(self.calls("create_campaign")[1][1]["agent"], [502])
+
+    def test_the_second_start_reuses_the_agents_campaign(self):
+        self.start(self.a1)
+        self.post(self.a1, "session/stop")
+        self.start(self.a1)
+        self.assertEqual(len(self.calls("create_campaign")), 1)
+        self.assertEqual(len(self.calls("create_lead_list")), 1)
+
+    def test_an_existing_campaign_with_that_name_in_smartflo_is_adopted(self):
+        from dialer.setup import agent_route_name
+        name = agent_route_name(Campaign.objects.get(key="dpd1_7"), self.a1)
+        self.fake.lead_lists.append({"id": 777, "name": name})
+        self.fake.campaigns.append({"id": 888, "name": name})
+        self.start(self.a1)
+        from dialer.models import AgentRoute
+        self.assertEqual((AgentRoute.objects.get().smartflo_campaign_id, AgentRoute.objects.get().smartflo_list_id), ("888", "777"))
+        self.assertEqual(self.calls("create_campaign"), [])
+
+    def test_the_campaign_needs_no_ids_by_hand_but_must_be_switched_on(self):
+        Campaign.objects.filter(key="dpd1_7").update(active=False)
+        self.assertEqual(self.start(self.a1).status_code, 400)
+
+    def test_old_entries_in_the_agents_own_list_are_cleared_at_the_start(self):
+        self.fake.lead_lists.append({"id": 777, "name": __import__("dialer.setup", fromlist=["x"]).agent_route_name(Campaign.objects.get(key="dpd1_7"), self.a1)})
+        self.fake.leads = {"data": [{"lead_id": "x1", "field_0": "9000000000", "field_2": "OLD1"}]}
+        self.start(self.a1)
+        self.assertEqual([c[1] for c in self.calls("delete_lead")], ["x1"])
+
+    def test_stop_and_pause_use_the_agents_own_campaign_and_nothing_is_withdrawn(self):
+        self.start(self.a1)
+        from dialer.models import AgentRoute
+        cid = AgentRoute.objects.get(user=self.a1).smartflo_campaign_id
+        self.post(self.a1, "session/pause", {"reason": "lunch"})
+        self.post(self.a1, "session/resume")
+        self.fake.calls.clear()
+        self.post(self.a1, "session/stop")
+        self.assertEqual(self.calls("logout")[0][2], cid)
+        self.assertEqual(self.calls("delete_leads"), [])            # the agent's list is their own: nothing to take out for a colleague
+
+    def test_an_agent_without_a_smartflo_login_is_told_so(self):
+        from dialer.models import DialerProfile
+        DialerProfile.objects.filter(user=self.a1).update(smartflo_email="")
+        r = self.start(self.a1)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("login id", r.json()["detail"])
+
+    def test_a_smartflo_refusal_when_making_the_campaign_is_shown(self):
+        self.fake.fail = {"create_campaign": SmartfloError("bad", 422)}
+        r = self.start(self.a1)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("would not create your campaign", r.json()["detail"])
+
+    def test_dial_rules_reach_every_agents_campaign(self):
+        self.start(self.a1)
+        self.start(self.a2)
+        self.fake.calls.clear()
+        r = self.post(self.admin, "smartflo/rules/dpd1_7")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(self.calls("update_campaign")), 2)
+
+    def test_the_head_can_switch_it_on_per_campaign_and_the_row_counts_agent_campaigns(self):
+        Campaign.objects.filter(key="dpd1_7").update(per_agent=False)
+        r = self.api(self.head).put("/api/dialer/campaigns/dpd1_7", {"per_agent": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.json()["per_agent"], r.json()["agent_campaigns"], r.json()["configured"]), (True, 0, True))
+        self.start(self.a1)
+        rows = self.api(self.head).get("/api/dialer/pools").json()["pools"]
+        self.assertEqual(next(c for c in rows if c["key"] == "dpd1_7")["agent_campaigns"], 1)
+
+    def test_a_campaign_that_is_not_per_agent_still_uses_its_shared_ids(self):
+        Campaign.objects.filter(key="dpd1_7").update(per_agent=False, smartflo_campaign_id="111", smartflo_list_id="222")
+        self.fake = Account()
+        views.get_client.return_value = self.fake
+        self.start(self.a1)
+        self.assertEqual(self.calls("session_create")[0][2], "111")
+        self.assertEqual(self.calls("create_campaign"), [])

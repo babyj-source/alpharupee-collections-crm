@@ -25,7 +25,8 @@ from loans.serializers import LoanSerializer
 from loans.views import DispositionView, scoped
 from loans.workflow import CALL_END_HOUR, CALL_START_HOUR, CONNECTED, DISPOSITION_LABELS, DISPOSITIONS
 
-from .models import PAUSE_LABELS, PAUSE_REASONS, Campaign, CampaignPush, DialAttempt, DialerPause, DialerProfile, DialerSession, DispositionMap, PushedLead
+from .models import PAUSE_LABELS, PAUSE_REASONS, AgentRoute, Campaign, CampaignPush, DialAttempt, DialerPause, DialerProfile, DialerSession, DispositionMap, PushedLead
+from .lists import purge_stale
 from .pools import RULE_DEFAULTS, campaign_loans, clean_rules, lead_pairs, lead_rows, rules_summary
 from . import setup as smartflo_setup
 from .smartflo import SmartfloClient, SmartfloDisabled, SmartfloError, call_phase, last10, parse_live_calls, walk_dicts
@@ -74,8 +75,8 @@ def _digits_field(max_len=12):
 
 # ------------------------------------------------------------------ campaigns
 def _campaign_row(c, user):
-    row = {"key": c.key, "label": c.label, "custom": c.custom, "eligible": len(lead_rows(campaign_loans(c))), "configured": c.configured,
-           "active": c.active, "last_pushed_at": c.last_pushed_at, "last_pushed_count": c.last_pushed_count}
+    row = {"key": c.key, "label": c.label, "custom": c.custom, "eligible": len(lead_rows(campaign_loans(c))), "configured": c.configured or c.per_agent,
+           "per_agent": c.per_agent, "agent_campaigns": c.routes.count() if c.per_agent else 0, "active": c.active, "last_pushed_at": c.last_pushed_at, "last_pushed_count": c.last_pushed_count}
     if user.is_head:
         row.update({"smartflo_campaign_id": c.smartflo_campaign_id, "smartflo_list_id": c.smartflo_list_id,
                     "rules": {**RULE_DEFAULTS, **(c.rules or {})} if c.custom else None, "summary": rules_summary(c)})
@@ -93,6 +94,15 @@ class PoolListView(APIView):
                          "pools": [_campaign_row(c, request.user) for c in Campaign.objects.all()]})
 
 
+def route_ids(camp, user):
+    """(Smartflo campaign id, lead-list id) this agent works in. A per-agent campaign has one of each for every agent (made at their first
+    start); any other campaign has one shared by everybody."""
+    if camp.per_agent:
+        r = AgentRoute.objects.filter(campaign=camp, user=user).first()
+        return (r.smartflo_campaign_id, r.smartflo_list_id) if r else ("", "")
+    return camp.smartflo_campaign_id, camp.smartflo_list_id
+
+
 def push_for_agent(camp, user, client):
     """Send this agent's own customers in the campaign to its Smartflo lead list, skipping anyone already sent today.
     Returns (sent, total, error). Stops at the first Smartflo error; what was sent stays recorded."""
@@ -103,7 +113,7 @@ def push_for_agent(camp, user, client):
     try:
         for i in range(0, len(pairs), CHUNK):
             chunk = pairs[i:i + CHUNK]
-            client.bulk_add_leads(camp.smartflo_list_id, [row for _pk, row in chunk])
+            client.bulk_add_leads(route_ids(camp, user)[1], [row for _pk, row in chunk])
             PushedLead.objects.bulk_create([PushedLead(campaign=camp, loan_id=pk, pushed_on=today, user=user) for pk, _row in chunk],
                                            ignore_conflicts=True)
             sent += len(chunk)
@@ -154,7 +164,7 @@ def redial_unreached(camp, user, client):
     # customers taken out of the list earlier (the agent had left) are not in Smartflo any more: nothing to clear, just send them again
     in_list = [loan_id for _pk, loan_id, w in batch if not w]
     rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=in_list))] if in_list else []
-    warning = _clear_leads(client, camp.smartflo_list_id, rows) if rows else ""
+    warning = _clear_leads(client, route_ids(camp, user)[1], rows) if rows else ""
     if warning and not getattr(warning, "partial", False):
         return 0, 0, len(ids), "Smartflo is busy or would not clear the old entries, so nothing was changed. Wait a minute and try again.", str(warning), len(unreached)
     PushedLead.objects.filter(pk__in=[pk for pk, _l, _w in batch]).delete()
@@ -170,6 +180,8 @@ def withdraw_leads(camp, user, client):
     Smartflo hands the next customer to whichever agent is free, so customers of an agent who is not signed in to the campaign would
     be rung by a colleague. The rows stay recorded (withdrawn) so the agent's next start puts them back. Never raises: Smartflo being busy
     only means they stay in the list until the next try. Returns how many were taken out."""
+    if camp.per_agent:               # the agent's list is their own: nobody else rings from it
+        return 0
     rows_qs = unreached_today(camp, user).filter(withdrawn=False)
     batch = list(rows_qs.values_list("pk", "loan_id")[:WITHDRAW_BATCH])
     if not batch:
@@ -178,7 +190,7 @@ def withdraw_leads(camp, user, client):
     if not rows:
         return 0
     try:
-        warning = _clear_leads(client, camp.smartflo_list_id, rows)
+        warning = _clear_leads(client, route_ids(camp, user)[1], rows)
     except SmartfloError:
         return 0
     if warning:                      # busy, refused or only some cleared: leave them as they are and try again at the next start or stop
@@ -190,6 +202,8 @@ def withdraw_leads(camp, user, client):
 def withdraw_absent_agents(camp, client, keep_user=None):
     """Before a campaign is rung, take out of its shared list the customers of agents who are not signed in to it any more (they stopped,
     switched campaign, or their session lapsed), so the agents who are signed in only ring their own customers."""
+    if camp.per_agent:
+        return 0
     now = timezone.now()
     active = set(DialerSession.objects.filter(campaign=camp, ended_at__isnull=True, token_expires_at__gt=now).values_list("user_id", flat=True))
     owners = set(PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), withdrawn=False).values_list("user_id", flat=True))
@@ -206,6 +220,7 @@ class CampaignWriteSerializer(serializers.Serializer):
     rules = serializers.DictField(required=False)
     smartflo_campaign_id = _digits_field()
     smartflo_list_id = _digits_field()
+    per_agent = serializers.BooleanField(required=False)
     active = serializers.BooleanField(required=False)
 
 
@@ -237,7 +252,8 @@ class CampaignCreateView(APIView):
         camp = Campaign(key=_unique_key(label), label=label, custom=True, rules=rules, sort=100 + Campaign.objects.count(),
                         smartflo_campaign_id=d.get("smartflo_campaign_id", ""), smartflo_list_id=d.get("smartflo_list_id", ""),
                         updated_by=request.user)
-        if d.get("active") and not camp.configured:
+        camp.per_agent = bool(d.get("per_agent"))
+        if d.get("active") and not (camp.configured or camp.per_agent):
             return bad("Enter both the Smartflo campaign id and the lead-list id before switching a campaign on.")
         camp.active = bool(d.get("active"))
         camp.save()
@@ -308,11 +324,12 @@ class SmartfloRulesView(APIView):
     def post(self, request, key):
         if not enabled():
             return bad("Smartflo is switched off on this server, or no token is set.")
-        camps = Campaign.objects.exclude(smartflo_campaign_id="") if key == "all" else [get_object_or_404(Campaign, key=key)]
+        camps = (Campaign.objects.filter(Q(routes__isnull=False) | ~Q(smartflo_campaign_id="")).distinct() if key == "all"
+                 else [get_object_or_404(Campaign, key=key)])
         done, failed = [], []
         for camp in camps:
             try:
-                smartflo_setup.apply_dial_rules(camp, get_client())
+                smartflo_setup.apply_dial_rules_everywhere(camp, get_client())
                 done.append(camp.label)
             except smartflo_setup.SetupError as exc:
                 failed.append(f"{camp.label}: {exc}")
@@ -365,10 +382,10 @@ class CampaignUpdateView(APIView):
                 if err:
                     return bad(err)
                 camp.rules = rules
-        for k in ("smartflo_campaign_id", "smartflo_list_id", "active"):
+        for k in ("smartflo_campaign_id", "smartflo_list_id", "active", "per_agent"):
             if k in d:
                 setattr(camp, k, d[k])
-        if camp.active and not camp.configured:
+        if camp.active and not camp.startable:
             return bad("Enter both the Smartflo campaign id and the lead-list id before switching a campaign on.")
         camp.updated_by = request.user
         camp.save()
@@ -507,13 +524,13 @@ class SessionStartView(APIView):
         camp = Campaign.objects.filter(key=d["campaign"]).first()
         if camp is None:
             return bad("Unknown campaign.")
-        if not (camp.active and camp.configured):
+        if not camp.startable:
             return bad("This campaign is not switched on yet.")
         client = get_client()
         old, _expired = current_session(request.user)
         if old:
             try:
-                client.logout(unseal(old.token_enc), old.campaign.smartflo_campaign_id)
+                client.logout(unseal(old.token_enc), route_ids(old.campaign, request.user)[0])
             except SmartfloError:
                 pass
             old.ended_at = timezone.now()
@@ -530,19 +547,29 @@ class SessionStartView(APIView):
                 return bad("Smartflo did not accept that login id and password. " + str(exc).split(". ", 1)[-1][:120], 400)
             return bad(str(exc), 502)
         left = []
+        cid, sname = camp.smartflo_campaign_id, camp.label
+        if camp.per_agent:
+            # The agent's own Smartflo campaign and lead list, made the first time they start this campaign and used from then on.
+            try:
+                route = smartflo_setup.provision_agent_route(camp, request.user, client)
+            except smartflo_setup.SetupError as exc:
+                return bad(str(exc))
+            except SmartfloError as exc:
+                return bad(f"Signed in, but Smartflo would not make your campaign. {exc}", 502)
+            cid, sname = route.smartflo_campaign_id, route.smartflo_name
         try:
-            made = client.session_create(token, camp.smartflo_campaign_id, camp.label)
+            made = client.session_create(token, cid, sname)
             left = (made.get("left") or []) if isinstance(made, dict) else []
             try:
-                client.session_call(token, camp.smartflo_campaign_id, start=True)
+                client.session_call(token, cid, start=True)
             except SmartfloError as exc:
                 # A session from an earlier sign-in (a token that lapsed without a logout) makes Smartflo answer "Agent is on a call."
                 # The CRM has no open session for this agent, so end the old one and start again, once.
                 if "on a call" not in str(exc).lower():
                     raise
-                client.logout(token, camp.smartflo_campaign_id)
-                client.session_create(token, camp.smartflo_campaign_id, camp.label)
-                client.session_call(token, camp.smartflo_campaign_id, start=True)
+                client.logout(token, cid)
+                client.session_create(token, cid, sname)
+                client.session_call(token, cid, start=True)
         except SmartfloError as exc:
             return bad(f"Signed in, but Smartflo would not start the session. {exc}", 502)
         s = DialerSession.objects.create(user=request.user, campaign=camp, token_enc=seal(token),
@@ -551,6 +578,10 @@ class SessionStartView(APIView):
               detail=camp.key + (f" (signed out of Smartflo campaign: {', '.join(left)[:120]})" if left else ""))
         # Rejoining the same day: only the customers not reached yet are cleared and sent again; the ones already spoken to stay as they are.
         rejoined = PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), user=request.user).exists()
+        if camp.per_agent:
+            # A fresh list for the day: whatever earlier days left in the agent's own list goes, today's customers stay.
+            today_accounts = set(PushedLead.objects.filter(campaign=camp, pushed_on=timezone.localdate(), user=request.user).values_list("loan__account_id", flat=True))
+            purge_stale(client, route.smartflo_list_id, today_accounts)
         resent, warning, rest = 0, "", 0
         if rejoined:
             try:
@@ -681,7 +712,7 @@ class SessionResendView(APIView):
         client, today = get_client(), timezone.localdate()
         mine = PushedLead.objects.filter(campaign=s.campaign, pushed_on=today, user=request.user)
         rows = [row for _pk, row in lead_pairs(Loan.objects.filter(pk__in=mine.values("loan_id")))]
-        warning = _clear_leads(client, s.campaign.smartflo_list_id, rows) if rows else ""
+        warning = _clear_leads(client, route_ids(s.campaign, request.user)[1], rows) if rows else ""
         mine.delete()
         sent, total, error = push_for_agent(s.campaign, request.user, client)
         audit(request, "campaign_resent", user=request.user, object_type="campaign", object_id=s.campaign_id,
@@ -718,7 +749,7 @@ class SessionLeadsView(APIView):
         try:
             for l in queue[:LEAD_LOOKUPS]:
                 if l.borrower_mobile:
-                    reply.append(client.list_leads(s.campaign.smartflo_list_id, number=last10(l.borrower_mobile)))
+                    reply.append(client.list_leads(route_ids(s.campaign, request.user)[1], number=last10(l.borrower_mobile)))
         except SmartfloError as exc:
             return bad(f"Smartflo would not show the list. {exc}", 502)
         by_acct = {l.account_id: l for l in queue}
@@ -744,7 +775,7 @@ class SessionStopView(APIView):
         s, _ = current_session(request.user)
         if s:
             try:
-                get_client().logout(unseal(s.token_enc), s.campaign.smartflo_campaign_id)
+                get_client().logout(unseal(s.token_enc), route_ids(s.campaign, s.user)[0])
             except SmartfloError:
                 pass  # we still close our side; Smartflo logs the agent out when the token lapses
             now = timezone.now()
@@ -781,7 +812,7 @@ class SessionPauseView(APIView):
             return bad("The dialler is switched off on this server.")
         busy = bool(s.on_call or (s.last_unique_id and not s.released))
         try:
-            get_client().session_call(unseal(s.token_enc), s.campaign.smartflo_campaign_id, start=False)
+            get_client().session_call(unseal(s.token_enc), route_ids(s.campaign, s.user)[0], start=False)
         except SmartfloError as exc:
             return bad(f"Smartflo would not pause the campaign. {exc}", 502)
         s.paused_at, s.pause_reason = timezone.now(), reason
@@ -806,7 +837,7 @@ class SessionResumeView(APIView):
         if not enabled():
             return bad("The dialler is switched off on this server.")
         try:
-            get_client().session_call(unseal(s.token_enc), s.campaign.smartflo_campaign_id, start=True)
+            get_client().session_call(unseal(s.token_enc), route_ids(s.campaign, s.user)[0], start=True)
         except SmartfloError as exc:
             if "on a call" not in str(exc).lower():       # "Agent is on a call." = the session call is already running: nothing to restart
                 return bad(f"Smartflo would not resume the campaign. {exc}", 502)

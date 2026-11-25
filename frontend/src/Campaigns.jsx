@@ -96,7 +96,7 @@ function Live() {
 }
 
 const BLANK = { label: "", dpd_min: "0", dpd_max: "", min_overdue: "0", product_code: "", hold_promises: true, hold_callbacks: true,
-  smartflo_campaign_id: "", smartflo_list_id: "", active: false };
+  smartflo_campaign_id: "", smartflo_list_id: "", active: false, per_agent: false };
 const digits = (v) => v.replace(/\D/g, "");
 
 function CampaignList({ admin }) {
@@ -113,14 +113,14 @@ function CampaignList({ admin }) {
     try { await fn(); setNotice(ok); setForm(null); await load(); } catch (e) { setError(e.message); }
   };
   const body = (f, custom) => ({
-    smartflo_campaign_id: f.smartflo_campaign_id, smartflo_list_id: f.smartflo_list_id, active: f.active,
+    smartflo_campaign_id: f.smartflo_campaign_id, smartflo_list_id: f.smartflo_list_id, active: f.active, per_agent: !!f.per_agent,
     ...(custom ? { label: f.label, rules: { dpd_min: f.dpd_min, dpd_max: f.dpd_max, min_overdue: f.min_overdue, product_code: f.product_code,
       hold_promises: f.hold_promises, hold_callbacks: f.hold_callbacks } } : {}),
   });
   const edit = (c) => setForm({ key: c.key, custom: c.custom, label: c.label, ...(c.rules ? {
     dpd_min: String(c.rules.dpd_min ?? 0), dpd_max: c.rules.dpd_max == null ? "" : String(c.rules.dpd_max), min_overdue: String(c.rules.min_overdue ?? 0),
     product_code: c.rules.product_code || "", hold_promises: c.rules.hold_promises, hold_callbacks: c.rules.hold_callbacks } : {}),
-    smartflo_campaign_id: c.smartflo_campaign_id, smartflo_list_id: c.smartflo_list_id, active: c.active });
+    smartflo_campaign_id: c.smartflo_campaign_id, smartflo_list_id: c.smartflo_list_id, active: c.active, per_agent: !!c.per_agent });
   const toggle = (c) => run(() => api(`/dialer/campaigns/${c.key}`, { method: "PUT", body: { active: !c.active } }), `${c.label} ${c.active ? "paused" : "switched on"}.`);
   const save = (e) => {
     e.preventDefault();
@@ -176,6 +176,8 @@ function CampaignList({ admin }) {
             <label>Smartflo campaign id<input inputMode="numeric" value={form.smartflo_campaign_id} onChange={(e) => setForm({ ...form, smartflo_campaign_id: digits(e.target.value) })} /></label>
             <label>Smartflo lead-list id<input inputMode="numeric" value={form.smartflo_list_id} onChange={(e) => setForm({ ...form, smartflo_list_id: digits(e.target.value) })} /></label>
           </div>
+          <label className="row"><input type="checkbox" checked={form.per_agent} onChange={set("per_agent")} /> A separate Smartflo campaign and lead list for each agent</label>
+          <p className="muted small">When ticked, the ids above are not used. The CRM makes each agent's own Smartflo campaign and lead list the first time they start this campaign, so agents never ring each other's customers. Nothing to set up by hand.</p>
           <label className="row"><input type="checkbox" checked={form.active} onChange={set("active")} /> Agents can start this campaign</label>
           <p className="muted small">Create the campaign and its lead list in Smartflo first, then enter their ids. The lead list needs three columns in this order: Mobile, Name, Account ID.</p>
           <div className="row"><button>{form.key ? "Save" : "Create campaign"}</button><button type="button" className="ghost" onClick={() => setForm(null)}>Cancel</button></div>
@@ -191,12 +193,12 @@ function CampaignList({ admin }) {
               <tr key={c.key}>
                 <td>{c.label}{c.custom && <span className="chip" style={{ marginLeft: 6 }}>Custom</span>}{c.summary && <div className="muted small" style={{ maxWidth: 340, whiteSpace: "normal" }}>{c.summary}</div>}</td>
                 <td className="r">{num(c.eligible)}</td>
-                <td>{c.configured ? <span className="chip ok">Set</span> : <span className="chip today">Not set</span>}</td>
+                <td>{c.per_agent ? <span className="chip ok">Own for each agent ({c.agent_campaigns})</span> : c.configured ? <span className="chip ok">Set</span> : <span className="chip today">Not set</span>}</td>
                 <td>{c.active ? <span className="chip ok">Yes</span> : <span className="chip">Paused</span>}</td>
                 <td>
                   <button className="ghost" onClick={() => toggle(c)}>{c.active ? "Pause" : "Switch on"}</button>{" "}
-                  {admin && !c.configured && <><button disabled={!!making} onClick={() => makeInSmartflo(c)}>{making === c.key ? "Creating…" : "Create in Smartflo"}</button>{" "}</>}
-                  {admin && c.configured && <><button className="ghost" disabled={!!making} onClick={() => sendRules(c.key)}>Update dial rules</button>{" "}</>}
+                  {admin && !c.configured && !c.per_agent && <><button disabled={!!making} onClick={() => makeInSmartflo(c)}>{making === c.key ? "Creating…" : "Create in Smartflo"}</button>{" "}</>}
+                  {admin && (c.configured || c.per_agent) && <><button className="ghost" disabled={!!making} onClick={() => sendRules(c.key)}>Update dial rules</button>{" "}</>}
                   <button className="ghost" onClick={() => edit(c)}>Edit</button>
                   {c.custom && <>{" "}<button className="ghost" onClick={() => remove(c)}>Delete</button></>}
                 </td>

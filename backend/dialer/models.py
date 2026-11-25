@@ -14,6 +14,7 @@ class Campaign(models.Model):
     smartflo_campaign_id = models.CharField(max_length=20, blank=True)
     smartflo_list_id = models.CharField(max_length=20, blank=True, help_text="Smartflo lead list the CRM pushes customers into")
     active = models.BooleanField(default=False, help_text="agents can only start a session on an active campaign")
+    per_agent = models.BooleanField(default=False, help_text="each agent gets a Smartflo campaign and lead list of their own (made on their first start), so agents never ring each other's customers")
     last_pushed_at = models.DateTimeField(null=True, blank=True)
     last_pushed_count = models.IntegerField(default=0)
     updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
@@ -25,6 +26,26 @@ class Campaign(models.Model):
     @property
     def configured(self):
         return bool(self.smartflo_campaign_id and self.smartflo_list_id)
+
+    @property
+    def startable(self):
+        """Agents may start it once it is switched on and either has its own Smartflo ids or makes them per agent."""
+        return bool(self.active and (self.per_agent or self.configured))
+
+
+class AgentRoute(models.Model):
+    """The Smartflo campaign and lead list made for one agent in one campaign (Campaign.per_agent). Only that agent is attached to the
+    Smartflo campaign and only that agent's customers are in the list, so Smartflo rings nobody else's customers for them."""
+
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="routes")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    smartflo_campaign_id = models.CharField(max_length=20)
+    smartflo_list_id = models.CharField(max_length=20)
+    smartflo_name = models.CharField(max_length=80, help_text="the campaign's name in Smartflo")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["campaign", "user"], name="uniq_agent_route")]
 
 
 class DispositionMap(models.Model):

@@ -16,39 +16,9 @@ from django.utils import timezone
 
 from dialer import views
 from dialer.models import Campaign, PushedLead
-from dialer.smartflo import SmartfloError, walk_dicts
+from dialer.lists import read_list
+from dialer.smartflo import SmartfloError
 from loans.models import Loan
-
-MAX_PAGES = 60
-LIMIT = 100
-
-
-def read_list(client, list_id):
-    """Every lead in the list: [{'lead_id', 'account', 'status'...}]. Pages by last_seen_id while Smartflo says there are more."""
-    seen, out, last, pages = set(), [], None, 0
-    while pages < MAX_PAGES:
-        pages += 1
-        reply = client.list_leads(list_id, last_seen_id=last, limit=LIMIT)
-        got = 0
-        for d in walk_dicts(reply):
-            lid = d.get("lead_id") or d.get("id")
-            if lid in (None, "") or "field_2" not in d and "field_0" not in d:
-                continue
-            if str(lid) in seen:
-                continue
-            seen.add(str(lid))
-            got += 1
-            out.append({"lead_id": str(lid), "account": str(d.get("field_2", "")).strip(), "calls": d.get("call_count"), "dial_status": d.get("dial_status"),
-                        "available_at": str(d.get("available_at") or "")})
-        top = reply if isinstance(reply, dict) else {}
-        nxt = top.get("last_seen_id")
-        more = top.get("has_more") or top.get("hasMore")
-        if not got or not more or nxt in (None, "") or nxt == last:
-            break
-        last = nxt
-        sleep(0.3)
-    return out, pages
-
 
 def available_now(x, now):
     """Smartflo rings a lead only once its `available_at` (last try + the campaign's retry wait) has passed."""
@@ -65,6 +35,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("campaign", help="campaign key, e.g. dpd0, dpd1_7")
         parser.add_argument("--remove", action="store_true", help="delete the leads not sent today from the Smartflo list")
+        parser.add_argument("--agent", help="e-mail of the agent, for a campaign that has a Smartflo campaign and list of its own for each agent")
 
     def report_availability(self, leads):
         now = datetime.now(timezone_utc.utc)
@@ -73,12 +44,21 @@ class Command(BaseCommand):
         self.stdout.write(f"  ready for Smartflo to ring right now: {len(ready)}; waiting out the retry time: {len(waiting)}"
                           + (f" (the first becomes ready at {waiting[0][:19].replace('T', ' ')} UTC)" if waiting else ""))
 
-    def handle(self, *args, campaign, remove, **opts):
+    def handle(self, *args, campaign, remove, agent=None, **opts):
         camp = Campaign.objects.filter(key=campaign).first()
-        if camp is None or not camp.smartflo_list_id:
-            raise CommandError("Unknown campaign, or it has no Smartflo list id.")
+        if camp is None:
+            raise CommandError("Unknown campaign.")
+        list_id = camp.smartflo_list_id
+        if camp.per_agent:
+            route = camp.routes.filter(user__email__iexact=agent or "").first()
+            if route is None:
+                raise CommandError("This campaign has a list for each agent: add --agent <e-mail>. Agents with one: "
+                                   + ", ".join(camp.routes.values_list("user__email", flat=True)))
+            list_id = route.smartflo_list_id
+        if not list_id:
+            raise CommandError("The campaign has no Smartflo list id.")
         client = views.get_client()
-        leads, pages = read_list(client, camp.smartflo_list_id)
+        leads, pages = read_list(client, list_id)
         today = timezone.localdate()
         sent_today = set(PushedLead.objects.filter(campaign=camp, pushed_on=today).values_list("loan__account_id", flat=True))
         loans = {l.account_id: l for l in Loan.objects.filter(account_id__in={x["account"] for x in leads})}
