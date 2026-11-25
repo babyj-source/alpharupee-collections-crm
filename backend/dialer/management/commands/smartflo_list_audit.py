@@ -58,7 +58,7 @@ class Command(BaseCommand):
         if not list_id:
             raise CommandError("The campaign has no Smartflo list id.")
         client = views.get_client()
-        leads, pages = read_list(client, list_id)
+        leads, pages, complete = read_list(client, list_id)
         today = timezone.localdate()
         sent_today = set(PushedLead.objects.filter(campaign=camp, pushed_on=today).values_list("loan__account_id", flat=True))
         loans = {l.account_id: l for l in Loan.objects.filter(account_id__in={x["account"] for x in leads})}
@@ -75,6 +75,8 @@ class Command(BaseCommand):
             else:
                 groups["not sent today, belongs to an agent"].append(x)
         self.stdout.write(f"{camp.key}: {len(leads)} leads in the Smartflo list (read in {pages} page(s)); CRM sent {len(sent_today)} today")
+        if not complete:
+            self.stdout.write("  NOTE: the list may hold more than this. Smartflo returned a full page and would not give the next one, so these counts cover only the leads read.")
         for name, items in groups.items():
             self.stdout.write(f"  {name}: {len(items)}")
         self.report_availability(leads)

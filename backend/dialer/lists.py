@@ -8,11 +8,20 @@ LIMIT = 100
 
 
 def read_list(client, list_id):
-    """Every lead in the list: [{'lead_id', 'account', 'calls', 'dial_status', 'available_at'}]. Pages by last_seen_id while Smartflo says there are more."""
-    seen, out, last, pages = set(), [], None, 0
+    """Every lead in the list: [{'lead_id', 'account', 'calls', 'dial_status', 'available_at'}], and how many pages were read.
+    Pages by last_seen_id while Smartflo says there are more. Smartflo answers a lead list as a bare list, with no has_more, so a full page
+    (LIMIT leads) is taken to mean there may be more and the next page is asked for from the last lead's id; if Smartflo ignores or refuses
+    that, the leads read so far are what is returned and `complete` (third value) is False."""
+    seen, out, last, pages, complete = set(), [], None, 0, True
     while pages < MAX_PAGES:
         pages += 1
-        reply = client.list_leads(list_id, last_seen_id=last, limit=LIMIT)
+        try:
+            reply = client.list_leads(list_id, last_seen_id=last, limit=LIMIT)
+        except SmartfloError:
+            if last is None:
+                raise
+            complete = False
+            break
         got = 0
         for d in walk_dicts(reply):
             lid = d.get("lead_id") or d.get("id")
@@ -27,11 +36,18 @@ def read_list(client, list_id):
         top = reply if isinstance(reply, dict) else {}
         nxt = top.get("last_seen_id")
         more = top.get("has_more") or top.get("hasMore")
+        full_bare = isinstance(reply, list) and len(reply) >= LIMIT       # a bare list that came back full: there may be more
+        if full_bare and got:
+            nxt, more = out[-1]["lead_id"], True              # ask for the page after its last lead
         if not got or not more or nxt in (None, "") or nxt == last:
+            if full_bare:
+                complete = False          # Smartflo gave nothing new for the next page, or no way to ask for it
             break
         last = nxt
         sleep(0.3)
-    return out, pages
+    else:
+        complete = False
+    return out, pages, complete
 
 
 PURGE_MAX = 60   # leads taken out per start: Smartflo's request limit is shared by every agent, so a long clear-out is spread over starts
@@ -41,7 +57,7 @@ def purge_stale(client, list_id, keep_accounts, limit=PURGE_MAX):
     """Take out of an agent's own list every lead that is not one of today's customers (`keep_accounts`, account ids), so a start begins with a
     fresh list. Never raises: if Smartflo is busy the rest is cleared at the next start. Returns how many were removed."""
     try:
-        leads, _pages = read_list(client, list_id)
+        leads, _pages, _complete = read_list(client, list_id)
     except SmartfloError:
         return 0
     removed = 0

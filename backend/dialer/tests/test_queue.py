@@ -115,7 +115,8 @@ class QueueTests(DialerBase):
         self.assertEqual(PushedLead.objects.count(), 1)
 
     def test_resend_still_sends_when_smartflo_cannot_clear(self):
-        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (404).")}
+        self.fake.leads = {"data": [{"lead_id": "x1", "field_0": "9111111111", "field_2": "L1"}]}      # the customer is in the list, so a refusal is real
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (404)."), "delete_lead": SmartfloError("Smartflo refused the request (404).")}
         r = self.post(self.a1, "session/resend").json()
         self.assertEqual((r["sent"], "would not clear" in r["warning"]), (1, True))
 
@@ -486,8 +487,18 @@ class RedialBusySmartfloTests(DialerBase):
         self.start()
         self.fake.calls.clear()
 
+    def test_customers_not_found_in_the_list_are_not_a_problem_and_are_just_sent(self):
+        """A list just made for the agent (or already cleared) holds none of them: the field deletes Smartflo refuses are not worth a warning."""
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (422). The selected field is invalid.", status=422)}
+        d = self.post(self.a1, "session/redial").json()
+        self.assertEqual((d["resent"], d["sent"], d["error"], d["warning"]), (1, 1, "", ""))
+        r = self.post(self.a1, "session/resend").json()
+        self.assertEqual((r["sent"], r["warning"]), (1, ""))
+
     def test_if_smartflo_will_not_clear_nothing_is_sent_and_the_customer_stays_queued(self):
-        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (429). Too Many Requests", status=429)}
+        self.fake.leads = {"data": [{"lead_id": "x1", "field_0": "9111111111", "field_2": "L1"}]}
+        self.fake.fail = {"delete_leads": SmartfloError("Smartflo refused the request (429). Too Many Requests", status=429),
+                          "delete_lead": SmartfloError("Smartflo refused the request (429). Too Many Requests", status=429)}
         d = self.post(self.a1, "session/redial").json()
         self.assertEqual((d["resent"], d["sent"]), (0, 0))
         self.assertIn("nothing was changed", d["error"])
@@ -664,6 +675,7 @@ class SharedListOnlyHoldsSignedInAgentsTests(DialerBase):
 
     def test_when_smartflo_will_not_clear_them_stop_still_works_and_they_stay_marked_as_in_the_list(self):
         self.start(self.a2)
+        self.fake.leads = {"data": [{"lead_id": "x2", "field_0": "9222222222", "field_2": "L2"}]}
         self.fake.fail = {"delete_leads": SmartfloError("busy", 429), "delete_lead": SmartfloError("busy", 429)}
         r = self.post(self.a2, "session/stop")
         self.assertEqual(r.status_code, 200)
@@ -716,6 +728,27 @@ class ListAuditTests(DialerBase):
         text = self.run_it()
         self.assertIn("ready for Smartflo to ring right now: 2; waiting out the retry time: 2", text)
         self.assertIn("becomes ready at 2999-01-01 00:00:00 UTC", text)
+
+    def test_a_full_page_makes_it_ask_for_the_next_one(self):
+        page1 = [{"lead_id": f"a{i}", "field_0": "9000000000", "field_2": f"Z{i}"} for i in range(100)]
+        page2 = [{"lead_id": f"b{i}", "field_0": "9000000000", "field_2": f"Y{i}"} for i in range(5)]
+        asked = []
+
+        def list_leads(list_id, number=None, last_seen_id=None, limit=None):
+            asked.append(last_seen_id)
+            return page1 if last_seen_id is None else page2 if last_seen_id == "a99" else []
+        self.fake.list_leads = list_leads
+        text = self.run_it()
+        self.assertIn("105 leads in the Smartflo list (read in 2 page(s))", text)
+        self.assertEqual(asked, [None, "a99"])
+        self.assertNotIn("NOTE", text)
+
+    def test_when_smartflo_ignores_the_next_page_it_says_the_counts_may_be_incomplete(self):
+        page1 = [{"lead_id": f"a{i}", "field_0": "9000000000", "field_2": f"Z{i}"} for i in range(100)]
+        self.fake.list_leads = lambda list_id, number=None, last_seen_id=None, limit=None: page1     # the same page every time
+        text = self.run_it()
+        self.assertIn("100 leads in the Smartflo list", text)
+        self.assertIn("NOTE: the list may hold more than this", text)
 
 
 class CampaignShowTests(DialerBase):
